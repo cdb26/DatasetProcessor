@@ -34,7 +34,7 @@ class App(ctk.CTk):
     def _configure_window(self):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
-        self.title("Depth Dataset Capture")
+        self.title("Dataset Capture")
         self.geometry("1460x860")
         self.configure(fg_color=BG_DARK)
         self.resizable(False, False)
@@ -44,8 +44,8 @@ class App(ctk.CTk):
         self.distance_category = "unknown"
         self.latest_color      = None
         self.latest_depth      = None
-
-        self.ffrrrr_var   = ctk.StringVar(value="000000")
+        
+        self.ffrrrr_var   = ctk.StringVar(value="FFRRRR")
         self.height_var   = ctk.StringVar(value="0.8m")
         self.angle_var = ctk.StringVar(value="1")
         self.lighting_var = ctk.StringVar(value="well")
@@ -162,9 +162,9 @@ class App(ctk.CTk):
         self.height_menu = make_option_menu(grid, ["0.8m", "1.2m", "1.6m"], self.height_var)
         self.height_menu.grid(row=3, column=0, sticky="ew", padx=(0, 6))
         
-        make_label(grid, "ANGLE").grid(row=4, column=0, sticky="ew", pady=(0,2))
+        make_label(grid, "ANGLE").grid(row=4, column=0, sticky="w", pady=(0,2))
         self.angle_menu = make_option_menu(grid, ["1", "2", "3"], self.angle_var)
-        self.angle_menu.grid(row=5, column=0, sticky="ew", pady=(6,0))
+        self.angle_menu.grid(row=5, column=0, sticky="ew")
         make_label(grid, "1 - Ortho 2 - Diagonal 3 - Top Down").grid(row=4, column=1, sticky="ew")
 
         make_label(grid, "LIGHTING OVERRIDE").grid(row=2, column=1, sticky="w", pady=(0, 2))
@@ -222,10 +222,33 @@ class App(ctk.CTk):
             color=ACCENT,
             hover=ACCENT_DIM,
         )
+        
+        self.switch_btn = make_button(
+            inner,
+            text="Switch Angle [K]",
+            command=self._switch_angle,
+            width=220,
+            color=ACCENT,
+            hover=ACCENT_DIM,
+        )
+        
+        self.switch_btn.pack(fill="x", pady=(0,6))
         self.capture_btn.pack(fill="x")
 
         self.capture_status = make_label(inner, "", color=TEXT_MUTED)
         self.capture_status.pack(pady=(6, 0))
+        
+    def _switch_angle(self):
+        angles = ["1", "2", "3"]
+        current = self.angle_var.get()
+
+        try:
+            idx = angles.index(current)
+            next_angle = angles[(idx + 1) % len(angles)]
+        except ValueError:
+            next_angle = "1"
+
+        self.angle_var.set(next_angle)
 
     def _toggle_camera_mode(self):
         self.camera_mode = not self.camera_mode
@@ -263,6 +286,7 @@ class App(ctk.CTk):
         self.path_label.configure(
             text=f"./{rel}/\n  ├── color/\n  └── depth_raw/"
         )
+        
 
     def _capture_image(self, event=None):
         if not self.camera_mode or self.latest_color is None:
@@ -289,10 +313,15 @@ class App(ctk.CTk):
         name = os.path.basename(color_file)
         self.capture_status.configure(text=f"✓  {name}", text_color=ACCENT)
         self.after(2000, lambda: self.capture_status.configure(text=""))
+        
 
     def _key_handler(self, event):
         if self.camera_mode and event.char.lower() == "p":
             self._capture_image()
+
+        if self.camera_mode and event.char.lower() == "k":
+            self._switch_angle()
+                
 
     def _update_frame(self):
         color_image, depth_image = self.camera.get_frames()
@@ -300,6 +329,12 @@ class App(ctk.CTk):
         if color_image is None:
             self.after(10, self._update_frame)
             return
+        
+        floor = self.floor_var.get()
+        room = self.room_var.get()
+
+        if floor != "floorNum" and room != "roomNum":
+            self.ffrrrr_var.set(f"{floor}{room}")
         
         lighting, brightness = detect_lighting(color_image, self.lighting_var.get())
         self.lighting_var.set(lighting)
