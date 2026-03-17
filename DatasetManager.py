@@ -399,20 +399,30 @@ class DatasetManagerApp(ctk.CTk):
                       hover_color=BG_MID, font=("Courier New", 11), text_color=ACCENT2,
                       command=self._copy_matched).pack(side="left", padx=4)
 
-        self._section_label(parent, "RESULTS", padx=12)
-        col_hdr = ctk.CTkFrame(parent, fg_color=BG_FIELD, corner_radius=0, height=26)
+        hint = ctk.CTkFrame(parent, fg_color="transparent")
+        hint.pack(fill="x", padx=12, pady=(4, 0))
+        self._section_label(hint, "RESULTS  —  click any row to open image")
+        ctk.CTkLabel(hint, text="(color .jpg  /  depth .png)",
+                     font=("Courier New", 9), text_color=TEXT_DIM).pack(
+                         side="right", padx=4, pady=(8, 2))
+
+        col_hdr = ctk.CTkFrame(parent, fg_color=BG_MID, corner_radius=0, height=26)
         col_hdr.pack(fill="x", padx=12)
         col_hdr.pack_propagate(False)
-        for txt, w in [("Filename", 38), ("Room", 8), ("Height", 7),
-                        ("Angle", 9), ("Distance", 9), ("Lighting", 8), ("Seq", 6), ("Ext", 5)]:
+        for txt, w in [("Base filename (no ext)", 44), ("Room", 8), ("Height", 7),
+                        ("Angle", 10), ("Distance", 9), ("Lighting", 8),
+                        ("Seq", 6), ("Has", 7)]:
             ctk.CTkLabel(col_hdr, text=txt.upper(), font=("Courier New", 9, "bold"),
                          text_color=ACCENT, width=w*7, anchor="w").pack(side="left", padx=4)
 
-        self._filter_results = ctk.CTkTextbox(parent, font=("Courier New", 10),
-                                              fg_color=BG_FIELD, text_color=TEXT_MAIN,
-                                              border_color=BORDER, corner_radius=0)
-        self._filter_results.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        self._filter_matches: list[tuple[str, str, dict]] = []
+        self._filter_scroll = ctk.CTkScrollableFrame(
+            parent, fg_color=BG_FIELD, corner_radius=0)
+        self._filter_scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+        # _filter_matches now stores deduplicated records:
+        # list of dict with keys: base_key, parts, color_path, depth_path
+        self._filter_matches: list[dict] = []
+        self._filter_row_widgets: list[ctk.CTkFrame] = []
 
     def _toggle_fseq_fields(self):
         state = "normal" if self._fseq_mode.get() == "selected" else "disabled"
@@ -831,22 +841,21 @@ class DatasetManagerApp(ctk.CTk):
         root = self._get_root()
         if not root:
             return
-        fv = self._filter_vars
+        fv  = self._filter_vars
         ext = self._filter_ext.get()
 
         use_range = self._fseq_mode.get() == "selected"
         seq_s = self._fseq_start.get().strip() if use_range else ""
         seq_e = self._fseq_end.get().strip()   if use_range else ""
 
-        self._filter_matches = []
-        self._clear_log(self._filter_results)
+        # ── 1. Collect all matching files, group by base key ──────────────────
+        # base_key = room_height_angle_distance_lighting_sequence  (no ext)
+        grouped: dict[str, dict] = {}   # base_key -> {parts, color_path, depth_path}
 
         for abs_path, rel_folder, fname in walk_images(root):
             parts = parse_filename(fname)
             if not parts:
                 continue
-            if ext == "jpg" and parts["ext"] != ".jpg": continue
-            if ext == "png" and parts["ext"] != ".png": continue
 
             skip = False
             for field, key in [("room","f_room"),("height","f_height"),
@@ -861,19 +870,175 @@ class DatasetManagerApp(ctk.CTk):
             if seq_s and int(parts["sequence"]) < int(seq_s): continue
             if seq_e and int(parts["sequence"]) > int(seq_e): continue
 
-            self._filter_matches.append((abs_path, rel_folder, parts))
+            base_key = (f"{parts['room']}_{parts['height']}_{parts['angle']}_"
+                        f"{parts['distance']}_{parts['lighting']}_{parts['sequence']}")
+
+            if base_key not in grouped:
+                grouped[base_key] = {"base_key": base_key,
+                                     "parts": parts,
+                                     "color_path": None,
+                                     "depth_path": None}
+            if parts["ext"] == ".jpg":
+                grouped[base_key]["color_path"] = abs_path
+            else:
+                grouped[base_key]["depth_path"] = abs_path
+
+        # ── 2. Apply extension filter to decide which records to show ─────────
+        self._filter_matches = []
+        for rec in grouped.values():
+            if ext == "jpg"  and not rec["color_path"]: continue
+            if ext == "png"  and not rec["depth_path"]: continue
+            self._filter_matches.append(rec)
+
+        # ── 3. Clear old row widgets and rebuild ──────────────────────────────
+        for w in self._filter_row_widgets:
+            w.destroy()
+        self._filter_row_widgets.clear()
 
         total = len(self._filter_matches)
-        self._filter_count.set(f"{total} match(es)")
-        for abs_path, rel_folder, parts in self._filter_matches:
-            row = (f"  {parts['original']:<42}  "
-                   f"{parts['room']:8}  {parts['height']:7}  "
-                   f"{ANGLE_LABEL.get(parts['angle'],parts['angle']):10}  "
-                   f"{parts['distance']:9}  "
-                   f"{LIGHT_LABEL.get(parts['lighting'],parts['lighting']):8}  "
-                   f"{parts['sequence']:6}  {parts['ext']}")
-            self._log(self._filter_results, row)
-        self._set_status(f"Filter: {total} result(s)")
+        self._filter_count.set(f"{total} unique record(s)")
+
+        for idx, rec in enumerate(self._filter_matches):
+            p = rec["parts"]
+            has = []
+            if rec["color_path"]: has.append("JPG")
+            if rec["depth_path"]: has.append("PNG")
+            has_txt = "+".join(has)
+
+            base_name = rec["base_key"]
+            row_bg    = BG_FIELD if idx % 2 == 0 else BG_CARD
+
+            row_frame = ctk.CTkFrame(self._filter_scroll,
+                                     fg_color=row_bg, corner_radius=4,
+                                     cursor="hand2")
+            row_frame.pack(fill="x", pady=1)
+            self._filter_row_widgets.append(row_frame)
+
+            # columns
+            cols = [
+                (base_name,                                         44),
+                (p["room"],                                          8),
+                (p["height"],                                        7),
+                (ANGLE_LABEL.get(p["angle"], p["angle"]),           10),
+                (p["distance"],                                       9),
+                (LIGHT_LABEL.get(p["lighting"], p["lighting"]),      8),
+                (p["sequence"],                                       6),
+                (has_txt,                                             7),
+            ]
+            for col_txt, col_w in cols:
+                ctk.CTkLabel(row_frame, text=col_txt,
+                             font=("Courier New", 10), text_color=TEXT_MAIN,
+                             width=col_w*7, anchor="w").pack(side="left", padx=4, pady=4)
+
+            # bind click on the whole row and all its children
+            rec_copy = dict(rec)
+            def _on_click(event, r=rec_copy):
+                self._open_image_picker(r)
+            row_frame.bind("<Button-1>", _on_click)
+            for child in row_frame.winfo_children():
+                child.bind("<Button-1>", _on_click)
+
+            # hover highlight
+            def _enter(e, f=row_frame, bg=row_bg):
+                f.configure(fg_color=BG_MID)
+                for c in f.winfo_children(): c.configure(fg_color=BG_MID)
+            def _leave(e, f=row_frame, bg=row_bg):
+                f.configure(fg_color=bg)
+                for c in f.winfo_children(): c.configure(fg_color=bg)
+            row_frame.bind("<Enter>", _enter)
+            row_frame.bind("<Leave>", _leave)
+            for child in row_frame.winfo_children():
+                child.bind("<Enter>", _enter)
+                child.bind("<Leave>", _leave)
+
+        self._set_status(f"Filter: {total} unique record(s)")
+
+    def _open_image_picker(self, rec: dict):
+        """Popup that lets the user open the color (.jpg), depth (.png), or both."""
+        has_color = rec["color_path"] and os.path.isfile(rec["color_path"])
+        has_depth = rec["depth_path"] and os.path.isfile(rec["depth_path"])
+
+        if not has_color and not has_depth:
+            messagebox.showerror("Not found", "Neither image file could be located on disk.")
+            return
+
+        win = ctk.CTkToplevel(self)
+        win.title("Open image")
+        win.geometry("380x260")
+        win.resizable(False, False)
+        win.configure(fg_color=BG_DARK)
+        win.grab_set()
+        win.lift()
+        win.focus_force()
+
+        p = rec["parts"]
+        title_txt = (f"{rec['base_key']}")
+        ctk.CTkLabel(win, text="Open image for:", font=("Courier New", 10),
+                     text_color=TEXT_DIM).pack(pady=(18, 0))
+        ctk.CTkLabel(win, text=title_txt, font=("Courier New", 12, "bold"),
+                     text_color=TEXT_MAIN).pack(pady=(2, 14))
+
+        detail = (f"Room {p['room']}  ·  {p['height']}  ·  "
+                  f"{ANGLE_LABEL.get(p['angle'], p['angle'])}  ·  "
+                  f"{p['distance']}  ·  {LIGHT_LABEL.get(p['lighting'], p['lighting'])}  ·  "
+                  f"seq {p['sequence']}")
+        ctk.CTkLabel(win, text=detail, font=("Courier New", 9),
+                     text_color=TEXT_DIM).pack(pady=(0, 16))
+
+        btn_frame = ctk.CTkFrame(win, fg_color="transparent")
+        btn_frame.pack(pady=4)
+
+        def _open(path):
+            try:
+                os.startfile(path)
+            except AttributeError:
+                import subprocess, sys
+                opener = "open" if sys.platform == "darwin" else "xdg-open"
+                subprocess.Popen([opener, path])
+            except Exception as e:
+                messagebox.showerror("Cannot open", str(e))
+            win.destroy()
+
+        def _open_both():
+            if has_color: _open_file(rec["color_path"])
+            if has_depth: _open_file(rec["depth_path"])
+            win.destroy()
+
+        def _open_file(path):
+            try:
+                os.startfile(path)
+            except AttributeError:
+                import subprocess, sys
+                opener = "open" if sys.platform == "darwin" else "xdg-open"
+                subprocess.Popen([opener, path])
+            except Exception as e:
+                messagebox.showerror("Cannot open", str(e))
+
+        if has_color:
+            ctk.CTkButton(btn_frame, text="🖼  Color  (.jpg)", width=150, height=42,
+                          fg_color=ACCENT, hover_color=ACCENT2,
+                          font=("Courier New", 12, "bold"), text_color="white",
+                          command=lambda: (_open_file(rec["color_path"]), win.destroy())
+                          ).pack(side="left", padx=8)
+        if has_depth:
+            ctk.CTkButton(btn_frame, text="◧  Depth  (.png)", width=150, height=42,
+                          fg_color=ACCENT2, hover_color=ACCENT,
+                          font=("Courier New", 12, "bold"), text_color="white",
+                          command=lambda: (_open_file(rec["depth_path"]), win.destroy())
+                          ).pack(side="left", padx=8)
+        if has_color and has_depth:
+            ctk.CTkButton(win, text="Open both", width=120, height=32,
+                          fg_color=BG_FIELD, border_width=1, border_color=BORDER,
+                          hover_color=BG_MID, font=("Courier New", 10), text_color=TEXT_DIM,
+                          command=_open_both).pack(pady=(10, 0))
+
+        # Show file paths
+        if has_color:
+            ctk.CTkLabel(win, text=f"Color: …{os.sep}{os.path.basename(rec['color_path'])}",
+                         font=("Courier New", 8), text_color=TEXT_DIM).pack(pady=(8, 0))
+        if has_depth:
+            ctk.CTkLabel(win, text=f"Depth: …{os.sep}{os.path.basename(rec['depth_path'])}",
+                         font=("Courier New", 8), text_color=TEXT_DIM).pack(pady=(2, 0))
 
     def _export_filter_list(self):
         if not self._filter_matches:
@@ -885,12 +1050,14 @@ class DatasetManagerApp(ctk.CTk):
         if not path:
             return
         with open(path, "w", encoding="utf-8") as f:
-            f.write("abs_path\trelative_folder\troom\theight\tangle\t"
-                    "distance\tlighting\tsequence\text\n")
-            for abs_p, rel_f, parts in self._filter_matches:
-                f.write(f"{abs_p}\t{rel_f}\t{parts['room']}\t{parts['height']}\t"
-                        f"{parts['angle']}\t{parts['distance']}\t{parts['lighting']}\t"
-                        f"{parts['sequence']}\t{parts['ext']}\n")
+            f.write("base_key\troom\theight\tangle\tdistance\tlighting\tsequence"
+                    "\tcolor_path\tdepth_path\n")
+            for rec in self._filter_matches:
+                p = rec["parts"]
+                f.write(f"{rec['base_key']}\t{p['room']}\t{p['height']}\t"
+                        f"{p['angle']}\t{p['distance']}\t{p['lighting']}\t"
+                        f"{p['sequence']}\t{rec['color_path'] or ''}\t"
+                        f"{rec['depth_path'] or ''}\n")
         messagebox.showinfo("Exported",
                             f"Saved {len(self._filter_matches)} rows to\n{path}")
 
@@ -902,17 +1069,16 @@ class DatasetManagerApp(ctk.CTk):
         if not dest:
             return
         copied = 0
-        for abs_p, _, _ in self._filter_matches:
-            try:
-                shutil.copy2(abs_p, dest)
-                copied += 1
-            except Exception:
-                pass
+        for rec in self._filter_matches:
+            for path in [rec["color_path"], rec["depth_path"]]:
+                if path and os.path.isfile(path):
+                    try:
+                        shutil.copy2(path, dest)
+                        copied += 1
+                    except Exception:
+                        pass
         messagebox.showinfo("Done", f"Copied {copied} file(s) to\n{dest}")
 
-    # ══════════════════════════════════════════════════════════════════════════
-    #  PREVIEW / SCAN
-    # ══════════════════════════════════════════════════════════════════════════
     def _scan_all(self):
         root = self._get_root()
         if not root:
@@ -936,8 +1102,6 @@ class DatasetManagerApp(ctk.CTk):
         self._scan_count.set(f"{total} valid, {bad} unrecognised")
         self._set_status(f"Scan complete: {total} images found")
 
-
-# ─── Entry ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app = DatasetManagerApp()
     app.mainloop()
