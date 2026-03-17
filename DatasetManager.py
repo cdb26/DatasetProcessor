@@ -25,7 +25,7 @@ BORDER    = "#2E3A50"
 
 # ─── Filename parser ──────────────────────────────────────────────────────────
 FILENAME_RE = re.compile(
-    r"^(\d{6})_([\d.]+m)_(\d)_(close|medium|far)_(dim|well)_(\d{4})(\.(?:jpg|png))$",
+    r"^(\d{6})_([\d.]+m)_(\d)_(close|medium|far)_(dim|well)_(\d{4})(_depth)?(\.(?:jpg|png))$",
     re.IGNORECASE,
 )
 
@@ -40,13 +40,16 @@ def parse_filename(name: str) -> dict | None:
         "distance": m.group(4),
         "lighting": m.group(5),
         "sequence": m.group(6),
-        "ext":      m.group(7).lower(),
+        "is_depth": m.group(7) is not None,   # True when "_depth" suffix present
+        "ext":      m.group(8).lower(),
         "original": name,
     }
 
 def build_filename(parts: dict) -> str:
+    depth_suffix = "_depth" if parts.get("is_depth") else ""
     return (f"{parts['room']}_{parts['height']}_{parts['angle']}_"
-            f"{parts['distance']}_{parts['lighting']}_{parts['sequence']}{parts['ext']}")
+            f"{parts['distance']}_{parts['lighting']}_{parts['sequence']}"
+            f"{depth_suffix}{parts['ext']}")
 
 ANGLE_LABEL  = {"1": "Ortho", "2": "Diagonal", "3": "Top-down"}
 DIST_LABEL   = {"close": "Close", "medium": "Medium", "far": "Far"}
