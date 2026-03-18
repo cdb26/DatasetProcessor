@@ -4,7 +4,16 @@ from tkinter import filedialog, messagebox
 import os
 import re
 import shutil
+import threading
+import queue
 from collections import defaultdict
+
+try:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    _XLSX_OK = True
+except ImportError:
+    _XLSX_OK = False
 
 # ─── Theme ───────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -862,6 +871,13 @@ class DatasetManagerApp(ctk.CTk):
         root = self._get_root()
         if not root:
             return
+        self._filter_count.set("Searching…")
+        self._run_in_thread(self._run_filter_worker)
+
+    def _run_filter_worker(self):
+        root = self.dataset_path.get().strip()
+        if not root or not os.path.isdir(root):
+            return
         fv  = self._filter_vars
         ext = self._filter_ext.get()
 
@@ -904,14 +920,22 @@ class DatasetManagerApp(ctk.CTk):
             else:
                 grouped[base_key]["depth_path"] = abs_path
 
-        # ── 2. Apply extension filter to decide which records to show ─────────
-        self._filter_matches = []
+        # ── 2. Apply extension filter, then sort by sequence ascending ──────────
+        matches = []
         for rec in grouped.values():
             if ext == "jpg"  and not rec["color_path"]: continue
             if ext == "png"  and not rec["depth_path"]: continue
-            self._filter_matches.append(rec)
+            matches.append(rec)
 
-        # ── 3. Clear old row widgets and rebuild ──────────────────────────────
+        matches.sort(key=lambda r: int(r["parts"]["sequence"]))
+
+        # ── 3. Schedule UI rebuild on main thread ─────────────────────────────
+        self.after(0, lambda m=matches: self._build_filter_rows(m))
+
+    def _build_filter_rows(self, matches):
+        """Must be called on the main thread. Rebuilds clickable result rows."""
+        self._filter_matches = matches
+
         for w in self._filter_row_widgets:
             w.destroy()
         self._filter_row_widgets.clear()
@@ -953,8 +977,8 @@ class DatasetManagerApp(ctk.CTk):
 
             # bind click on the whole row and all its children
             rec_copy = dict(rec)
-            def _on_click(event, r=rec_copy):
-                self._open_image_picker(r)
+            def _on_click(event, i=idx):
+                self._open_image_picker(i)
             row_frame.bind("<Button-1>", _on_click)
             for child in row_frame.winfo_children():
                 child.bind("<Button-1>", _on_click)
@@ -974,92 +998,570 @@ class DatasetManagerApp(ctk.CTk):
 
         self._set_status(f"Filter: {total} unique record(s)")
 
-    def _open_image_picker(self, rec: dict):
-        """Popup that lets the user open the color (.jpg), depth (.png), or both."""
-        has_color = rec["color_path"] and os.path.isfile(rec["color_path"])
-        has_depth = rec["depth_path"] and os.path.isfile(rec["depth_path"])
+    def _open_image_picker(self, start_idx: int):
+        """Full inline image viewer with object counter panel and Excel export."""
+        try:
+            from PIL import Image, ImageTk
+            _pil_ok = True
+        except ImportError:
+            _pil_ok = False
 
-        if not has_color and not has_depth:
-            messagebox.showerror("Not found", "Neither image file could be located on disk.")
+        matches = self._filter_matches
+        total   = len(matches)
+        if total == 0:
             return
 
+        IMG_W, IMG_H = 900, 560
+
+        state = {
+            "idx":   start_idx,
+            "mode":  "color",
+            "imgtk": None,
+            # object_counts: { image_base_key -> { obj_name -> count } }
+            "object_counts": {},
+        }
+
         win = ctk.CTkToplevel(self)
-        win.title("Open image")
-        win.geometry("380x260")
-        win.resizable(False, False)
+        win.title("Image Viewer")
+        win.geometry(f"{IMG_W + 300}x{IMG_H + 160}")
+        win.minsize(900, 600)
+        win.resizable(True, True)
         win.configure(fg_color=BG_DARK)
         win.grab_set()
         win.lift()
         win.focus_force()
 
-        p = rec["parts"]
-        title_txt = (f"{rec['base_key']}")
-        ctk.CTkLabel(win, text="Open image for:", font=("Courier New", 10),
-                     text_color=TEXT_DIM).pack(pady=(18, 0))
-        ctk.CTkLabel(win, text=title_txt, font=("Courier New", 12, "bold"),
-                     text_color=TEXT_MAIN).pack(pady=(2, 14))
+        # ── TOP BAR ──────────────────────────────────────────────────────────
+        top = ctk.CTkFrame(win, fg_color=BG_MID, corner_radius=0, height=38)
+        top.pack(fill="x")
+        top.pack_propagate(False)
+        counter_lbl = ctk.CTkLabel(top, text="", font=("Courier New", 10),
+                                   text_color=TEXT_DIM)
+        counter_lbl.pack(side="left", padx=14)
+        key_lbl = ctk.CTkLabel(top, text="", font=("Courier New", 10, "bold"),
+                               text_color=TEXT_MAIN)
+        key_lbl.pack(side="left", padx=8)
+        detail_lbl = ctk.CTkLabel(top, text="", font=("Courier New", 9),
+                                  text_color=TEXT_DIM)
+        detail_lbl.pack(side="right", padx=16)
+        seq_lbl = ctk.CTkLabel(top, text="", font=("Courier New", 10),
+                               text_color=ACCENT)
+        seq_lbl.pack(side="right", padx=14)
 
-        detail = (f"Room {p['room']}  ·  {p['height']}  ·  "
-                  f"{ANGLE_LABEL.get(p['angle'], p['angle'])}  ·  "
-                  f"{p['distance']}  ·  {LIGHT_LABEL.get(p['lighting'], p['lighting'])}  ·  "
-                  f"seq {p['sequence']}")
-        ctk.CTkLabel(win, text=detail, font=("Courier New", 9),
-                     text_color=TEXT_DIM).pack(pady=(0, 16))
+        # ── MAIN BODY: image left, panel right ────────────────────────────────
+        body = ctk.CTkFrame(win, fg_color=BG_DARK, corner_radius=0)
+        body.pack(fill="both", expand=True)
 
-        btn_frame = ctk.CTkFrame(win, fg_color="transparent")
-        btn_frame.pack(pady=4)
+        # ── LEFT: image canvas ────────────────────────────────────────────────
+        canvas_frame = ctk.CTkFrame(body, fg_color=BG_FIELD, corner_radius=0)
+        canvas_frame.pack(side="left", fill="both", expand=True)
 
-        def _open(path):
+        canvas = tk.Canvas(canvas_frame, bg="#0F1117", highlightthickness=0)
+        canvas.pack(fill="both", expand=True)
+
+        no_img_lbl = ctk.CTkLabel(canvas_frame, text="No image available",
+                                  font=("Courier New", 13), text_color=TEXT_DIM,
+                                  fg_color="transparent")
+
+        # ── RIGHT: object counter panel ───────────────────────────────────────
+        right_panel = ctk.CTkFrame(body, fg_color=BG_CARD, corner_radius=0, width=280)
+        right_panel.pack(side="right", fill="y")
+        right_panel.pack_propagate(False)
+
+        ctk.CTkLabel(right_panel, text="OBJECT  COUNTER",
+                     font=("Courier New", 9, "bold"), text_color=ACCENT).pack(
+                         anchor="w", padx=14, pady=(12, 4))
+
+        add_obj_btn = ctk.CTkButton(right_panel, text="+ Add Object", height=32,
+                                    fg_color=ACCENT2, hover_color=ACCENT,
+                                    font=("Courier New", 11, "bold"), text_color="white",
+                                    command=lambda: _add_object_dialog())
+        add_obj_btn.pack(fill="x", padx=12, pady=(0, 8))
+
+        # scrollable table area
+        obj_scroll = ctk.CTkScrollableFrame(right_panel, fg_color=BG_FIELD,
+                                            corner_radius=6)
+        obj_scroll.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+
+        # list of (obj_name, count_var, row_frame) — rebuilt per image
+        obj_rows: list[dict] = []
+
+        def _get_counts_for_current():
+            key = matches[state["idx"]]["base_key"]
+            if key not in state["object_counts"]:
+                state["object_counts"][key] = {}
+            return state["object_counts"][key]
+
+        def _rebuild_obj_table():
+            for w in obj_scroll.winfo_children():
+                w.destroy()
+            obj_rows.clear()
+
+            counts = _get_counts_for_current()
+            # ensure all known objects appear even if count=0
+            all_objs = _all_known_objects()
+            for name in all_objs:
+                if name not in counts:
+                    counts[name] = 0
+                _add_obj_row(name, counts)
+
+            if not all_objs:
+                ctk.CTkLabel(obj_scroll,
+                             text="No objects added yet.\nClick '+ Add Object'.",
+                             font=("Courier New", 9), text_color=TEXT_DIM,
+                             justify="center").pack(pady=20)
+
+        def _all_known_objects():
+            """Return the union of all object names ever added."""
+            names = set()
+            for d in state["object_counts"].values():
+                names.update(d.keys())
+            return sorted(names)
+
+        def _add_obj_row(name: str, counts: dict):
+            row = ctk.CTkFrame(obj_scroll, fg_color=BG_MID, corner_radius=4)
+            row.pack(fill="x", pady=2)
+
+            ctk.CTkLabel(row, text=name, font=("Courier New", 10),
+                         text_color=TEXT_MAIN, anchor="w", width=100).pack(
+                             side="left", padx=8, pady=6)
+
+            cnt_var = tk.StringVar(value=str(counts.get(name, 0)))
+
+            minus_btn = ctk.CTkButton(row, text="−", width=28, height=28,
+                                      fg_color=BG_FIELD, hover_color=DANGER,
+                                      font=("Courier New", 13, "bold"),
+                                      text_color=TEXT_MAIN, corner_radius=4,
+                                      command=lambda n=name: _change_count(n, -1))
+            minus_btn.pack(side="left", padx=2)
+
+            ctk.CTkLabel(row, textvariable=cnt_var,
+                         font=("Courier New", 12, "bold"),
+                         text_color=ACCENT, width=34,
+                         anchor="center").pack(side="left", padx=2)
+
+            plus_btn = ctk.CTkButton(row, text="+", width=28, height=28,
+                                     fg_color=BG_FIELD, hover_color=SUCCESS,
+                                     font=("Courier New", 13, "bold"),
+                                     text_color=TEXT_MAIN, corner_radius=4,
+                                     command=lambda n=name: _change_count(n, +1))
+            plus_btn.pack(side="left", padx=2)
+
+            obj_rows.append({"name": name, "var": cnt_var})
+
+        def _change_count(name: str, delta: int):
+            counts = _get_counts_for_current()
+            counts[name] = max(0, counts.get(name, 0) + delta)
+            # refresh just the var
+            for r in obj_rows:
+                if r["name"] == name:
+                    r["var"].set(str(counts[name]))
+                    break
+
+        def _add_object_dialog():
+            dlg = ctk.CTkToplevel(win)
+            dlg.title("Add Object")
+            dlg.geometry("320x160")
+            dlg.resizable(False, False)
+            dlg.configure(fg_color=BG_DARK)
+            dlg.grab_set()
+            dlg.lift()
+            dlg.focus_force()
+
+            ctk.CTkLabel(dlg, text="Object name:", font=("Courier New", 11),
+                         text_color=TEXT_MAIN).pack(pady=(20, 6))
+            name_entry = ctk.CTkEntry(dlg, width=220, font=("Courier New", 12),
+                                      fg_color=BG_FIELD, text_color=TEXT_MAIN,
+                                      border_color=ACCENT,
+                                      placeholder_text="e.g. chair")
+            name_entry.pack(pady=4)
+            name_entry.focus_set()
+
+            def _save():
+                name = name_entry.get().strip()
+                if not name:
+                    return
+                # add to every existing image record so table is consistent
+                for d in state["object_counts"].values():
+                    if name not in d:
+                        d[name] = 0
+                # also seed current image
+                counts = _get_counts_for_current()
+                if name not in counts:
+                    counts[name] = 0
+                dlg.destroy()
+                _rebuild_obj_table()
+
+            ctk.CTkButton(dlg, text="Save", fg_color=ACCENT, hover_color=ACCENT2,
+                          font=("Courier New", 11, "bold"),
+                          command=_save).pack(pady=12)
+            dlg.bind("<Return>", lambda e: _save())
+
+        # ── BOTTOM BAR ────────────────────────────────────────────────────────
+        bot = ctk.CTkFrame(win, fg_color=BG_MID, corner_radius=0, height=96)
+        bot.pack(fill="x", side="bottom")
+        bot.pack_propagate(False)
+
+        nav_row = ctk.CTkFrame(bot, fg_color="transparent")
+        nav_row.pack(pady=(10, 4))
+
+        prev_btn = ctk.CTkButton(nav_row, text="◀", width=52, height=36,
+                                 fg_color=BG_FIELD, border_width=1, border_color=BORDER,
+                                 hover_color=BG_CARD, font=("Courier New", 14, "bold"),
+                                 text_color=TEXT_MAIN)
+        prev_btn.pack(side="left", padx=6)
+
+        color_tab = ctk.CTkButton(nav_row, text="🖼  Color", width=120, height=36,
+                                  fg_color=ACCENT, hover_color=ACCENT2,
+                                  font=("Courier New", 11, "bold"), text_color="white")
+        color_tab.pack(side="left", padx=4)
+
+        depth_tab = ctk.CTkButton(nav_row, text="◧  Depth", width=120, height=36,
+                                  fg_color=BG_FIELD, border_width=1, border_color=ACCENT2,
+                                  hover_color=BG_CARD, font=("Courier New", 11),
+                                  text_color=ACCENT2)
+        depth_tab.pack(side="left", padx=4)
+
+        next_btn = ctk.CTkButton(nav_row, text="▶", width=52, height=36,
+                                 fg_color=BG_FIELD, border_width=1, border_color=BORDER,
+                                 hover_color=BG_CARD, font=("Courier New", 14, "bold"),
+                                 text_color=TEXT_MAIN)
+        next_btn.pack(side="left", padx=6)
+
+        save_btn = ctk.CTkButton(nav_row, text="💾  Save Record", width=150, height=36,
+                                 fg_color=SUCCESS, hover_color="#2AB87A",
+                                 font=("Courier New", 11, "bold"), text_color="white",
+                                 command=lambda: _save_excel())
+        save_btn.pack(side="left", padx=14)
+
+        fname_lbl = ctk.CTkLabel(bot, text="", font=("Courier New", 9),
+                                 text_color=TEXT_DIM)
+        fname_lbl.pack(pady=(0, 6))
+
+        # ── IMAGE RENDER ──────────────────────────────────────────────────────
+        def _render_image(path):
+            no_img_lbl.place_forget()
+            canvas.delete("all")
+            if not path or not os.path.isfile(path):
+                no_img_lbl.place(relx=0.5, rely=0.5, anchor="center")
+                return
+            if not _pil_ok:
+                no_img_lbl.configure(
+                    text="Install Pillow to preview:\npip install Pillow")
+                no_img_lbl.place(relx=0.5, rely=0.5, anchor="center")
+                return
             try:
-                os.startfile(path)
-            except AttributeError:
-                import subprocess, sys
-                opener = "open" if sys.platform == "darwin" else "xdg-open"
-                subprocess.Popen([opener, path])
-            except Exception as e:
-                messagebox.showerror("Cannot open", str(e))
-            win.destroy()
+                img = Image.open(path)
+                cw = canvas.winfo_width()  or IMG_W
+                ch = canvas.winfo_height() or IMG_H
+                img.thumbnail((cw, ch), Image.LANCZOS)
+                imgtk = ImageTk.PhotoImage(img)
+                state["imgtk"] = imgtk
+                canvas.create_image(cw // 2, ch // 2, anchor="center", image=imgtk)
+            except Exception as ex:
+                no_img_lbl.configure(text=f"Cannot load image:\n{ex}")
+                no_img_lbl.place(relx=0.5, rely=0.5, anchor="center")
 
-        def _open_both():
-            if has_color: _open_file(rec["color_path"])
-            if has_depth: _open_file(rec["depth_path"])
-            win.destroy()
+        def _highlight_tabs():
+            if state["mode"] == "color":
+                color_tab.configure(fg_color=ACCENT, border_width=0, text_color="white")
+                depth_tab.configure(fg_color=BG_FIELD, border_width=1,
+                                    border_color=ACCENT2, text_color=ACCENT2)
+            else:
+                color_tab.configure(fg_color=BG_FIELD, border_width=1,
+                                    border_color=ACCENT, text_color=ACCENT)
+                depth_tab.configure(fg_color=ACCENT2, border_width=0, text_color="white")
 
-        def _open_file(path):
+        # ── REFRESH ───────────────────────────────────────────────────────────
+        def refresh():
+            i   = state["idx"]
+            rec = matches[i]
+            p   = rec["parts"]
+
+            has_color = bool(rec["color_path"] and os.path.isfile(rec["color_path"]))
+            has_depth = bool(rec["depth_path"] and os.path.isfile(rec["depth_path"]))
+
+            if state["mode"] == "color" and not has_color and has_depth:
+                state["mode"] = "depth"
+            elif state["mode"] == "depth" and not has_depth and has_color:
+                state["mode"] = "color"
+
+            counter_lbl.configure(text=f"{i+1} / {total}")
+            key_lbl.configure(text=rec["base_key"])
+            seq_lbl.configure(text=f"seq {p['sequence']}")
+            detail_lbl.configure(
+                text=(f"Room {p['room']}  ·  {p['height']}  ·  "
+                      f"{ANGLE_LABEL.get(p['angle'], p['angle'])}  ·  "
+                      f"{p['distance']}  ·  "
+                      f"{LIGHT_LABEL.get(p['lighting'], p['lighting'])}"))
+
+            color_tab.configure(state="normal" if has_color else "disabled")
+            depth_tab.configure(state="normal" if has_depth else "disabled")
+            _highlight_tabs()
+
+            path = rec["color_path"] if state["mode"] == "color" else rec["depth_path"]
+            _render_image(path)
+            fname_lbl.configure(text=os.path.basename(path) if path else "—")
+
+            prev_btn.configure(state="normal" if i > 0 else "disabled",
+                               text_color=TEXT_MAIN if i > 0 else TEXT_DIM)
+            next_btn.configure(state="normal" if i < total-1 else "disabled",
+                               text_color=TEXT_MAIN if i < total-1 else TEXT_DIM)
+
+            _rebuild_obj_table()
+
+        # ── SAVE TO EXCEL ─────────────────────────────────────────────────────
+        def _save_excel():
+            if not _XLSX_OK:
+                messagebox.showerror(
+                    "Missing library",
+                    "openpyxl is required to save Excel files.\n"
+                    "Run: pip install openpyxl")
+                return
+
+            all_objs = _all_known_objects()
+            if not state["object_counts"]:
+                messagebox.showinfo("Nothing to save",
+                                    "No images visited yet.")
+                return
+
+            path = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel file", "*.xlsx")],
+                title="Save object record…",
+                parent=win)
+            if not path:
+                return
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Object Counts"
+
+            # ── colour palette ────────────────────────────────────────────────
+            C_HDR_BG   = "1E2535"
+            C_HDR_FG   = "4F8EF7"
+            C_OBJ_BG   = "252D3D"
+            C_OBJ_FG   = "7C5CFC"
+            C_ROW_EVEN = "161B27"
+            C_ROW_ODD  = "1E2535"
+            C_BORDER   = "2E3A50"
+
+            hdr_font  = Font(name="Calibri", bold=True,  color=C_HDR_FG, size=10)
+            obj_font  = Font(name="Calibri", bold=True,  color=C_OBJ_FG, size=10)
+            data_font = Font(name="Calibri", bold=False, color="E8EDF5",  size=10)
+            cnt_font  = Font(name="Calibri", bold=True,  color="E8EDF5",  size=10)
+
+            hdr_fill  = PatternFill("solid", fgColor=C_HDR_BG)
+            obj_fill  = PatternFill("solid", fgColor=C_OBJ_BG)
+
+            center = Alignment(horizontal="center", vertical="center",
+                               wrap_text=True)
+            left   = Alignment(horizontal="left",   vertical="center",
+                               wrap_text=False)
+
+            thin   = Side(style="thin",   color=C_BORDER)
+            medium = Side(style="medium", color="4F8EF7")
+            brd    = Border(left=thin, right=thin, top=thin, bottom=thin)
+            brd_m  = Border(left=medium, right=thin, top=thin, bottom=thin)
+
+            # ── column definitions ────────────────────────────────────────────
+            # (header_text, width, alignment, is_meta)
+            META_COLS = [
+                ("Date",                    13, left,   True),
+                ("Floor",                    7, center, True),
+                ("Room",                     7, center, True),
+                ("Height (m)",               9, center, True),
+                ("Distance",                10, center, True),
+                ("Angle",                   11, center, True),
+                ("Lighting",                10, center, True),
+                ("Resolution",              12, center, True),
+                ("RGB Format",              10, center, True),
+                ("Depth Format",            11, center, True),
+                ("Start Filename",          34, left,   True),
+                ("End Filename",            34, left,   True),
+                ("# Images",                9, center, True),
+                ("Est. Total Objects",      14, center, True),
+            ]
+            # object columns (dynamic)
+            OBJ_COLS = [(name, max(12, len(name)+2), center, False)
+                        for name in all_objs]
+            # trailing meta
+            TRAIL_COLS = [
+                ("Object Class",            18, left,   True),
+                ("Notes",                   28, left,   True),
+            ]
+
+            ALL_COLS = META_COLS + OBJ_COLS + TRAIL_COLS
+            N_META   = len(META_COLS)
+            N_OBJ    = len(OBJ_COLS)
+
+            # ── header row ────────────────────────────────────────────────────
+            for ci, (hdr, width, align, is_meta) in enumerate(ALL_COLS, start=1):
+                cell = ws.cell(row=1, column=ci, value=hdr)
+                if not is_meta:                       # object column
+                    cell.font      = obj_font
+                    cell.fill      = obj_fill
+                else:
+                    cell.font      = hdr_font
+                    cell.fill      = hdr_fill
+                cell.alignment = center               # all headers centred
+                cell.border    = brd
+                ws.column_dimensions[
+                    openpyxl.utils.get_column_letter(ci)].width = width
+
+            ws.row_dimensions[1].height = 30
+
+            # ── data rows ─────────────────────────────────────────────────────
+            import datetime
+
+            sorted_keys = sorted(
+                state["object_counts"].keys(),
+                key=lambda k: int(
+                    next((m["parts"]["sequence"]
+                          for m in matches if m["base_key"] == k), "0")))
+
+            for row_i, key in enumerate(sorted_keys, start=2):
+                rec    = next((m for m in matches if m["base_key"] == key), None)
+                counts = state["object_counts"].get(key, {})
+
+                row_fill = PatternFill("solid",
+                                       fgColor=C_ROW_EVEN if row_i % 2 == 0
+                                       else C_ROW_ODD)
+
+                if rec:
+                    p = rec["parts"]
+                    floor_code = p["room"][:2]
+                    room_code  = p["room"][2:]
+                    # derive start/end filenames from color files if available
+                    start_f = (os.path.basename(rec["color_path"])
+                               if rec["color_path"] else "")
+                    end_f   = (os.path.basename(rec["color_path"])
+                               if rec["color_path"] else "")
+
+                    n_images = 1   # each row = one image pair
+
+                    total_objs = sum(counts.values())
+
+                    # object class = comma-joined names that have count > 0
+                    obj_class = ", ".join(
+                        n for n in all_objs if counts.get(n, 0) > 0)
+
+                    meta_vals = [
+                        datetime.date.today().isoformat(),  # Date
+                        floor_code,                          # Floor
+                        room_code,                           # Room
+                        p["height"].replace("m", ""),        # Height
+                        p["distance"].capitalize(),          # Distance
+                        ANGLE_LABEL.get(p["angle"], p["angle"]),  # Angle
+                        LIGHT_LABEL.get(p["lighting"], p["lighting"]),  # Lighting
+                        "1280x720",                          # Resolution (default)
+                        "jpg",                               # RGB Format
+                        "png",                               # Depth Format
+                        start_f,                             # Start Filename
+                        end_f,                               # End Filename
+                        n_images,                            # # Images
+                        total_objs,                          # Est. Total Objects
+                    ]
+                else:
+                    meta_vals = [
+                        datetime.date.today().isoformat(),
+                        "", "", "", "", "", "", "", "", "",
+                        key, "", 1, 0]
+                    obj_class = ""
+
+                obj_vals   = [counts.get(o, 0) for o in all_objs]
+                trail_vals = [obj_class, ""]
+
+                all_vals = meta_vals + obj_vals + trail_vals
+
+                for ci, (val, (_, _, align, is_meta)) in enumerate(
+                        zip(all_vals, ALL_COLS), start=1):
+                    cell = ws.cell(row=row_i, column=ci, value=val)
+                    cell.fill   = row_fill
+                    cell.border = brd
+                    if not is_meta:
+                        cell.font      = cnt_font
+                        cell.alignment = center
+                    else:
+                        cell.font      = data_font
+                        cell.alignment = align
+
+                ws.row_dimensions[row_i].height = 18
+
+            ws.freeze_panes = "A2"
+
+            # ── totals row ────────────────────────────────────────────────────
+            tot_row = len(sorted_keys) + 2
+            tot_fill = PatternFill("solid", fgColor="0F1117")
+            tot_font = Font(name="Calibri", bold=True, color="4F8EF7", size=10)
+
+            for ci in range(1, len(ALL_COLS)+1):
+                cell = ws.cell(row=tot_row, column=ci)
+                cell.fill   = tot_fill
+                cell.border = brd
+                cell.font   = tot_font
+                col_name = ALL_COLS[ci-1][0]
+                if col_name == "Date":
+                    cell.value     = "TOTAL"
+                    cell.alignment = left
+                elif col_name == "# Images":
+                    cell.value     = len(sorted_keys)
+                    cell.alignment = center
+                elif col_name == "Est. Total Objects":
+                    cell.value     = sum(
+                        sum(state["object_counts"].get(k, {}).values())
+                        for k in sorted_keys)
+                    cell.alignment = center
+                elif N_META <= ci-1 < N_META + N_OBJ:
+                    # sum each object column
+                    obj_name = all_objs[ci-1-N_META]
+                    cell.value = sum(
+                        state["object_counts"].get(k, {}).get(obj_name, 0)
+                        for k in sorted_keys)
+                    cell.alignment = center
+
+            ws.row_dimensions[tot_row].height = 20
+
             try:
-                os.startfile(path)
-            except AttributeError:
-                import subprocess, sys
-                opener = "open" if sys.platform == "darwin" else "xdg-open"
-                subprocess.Popen([opener, path])
+                wb.save(path)
+                messagebox.showinfo(
+                    "Saved",
+                    f"Record saved to:\n{path}\n\n"
+                    f"{len(sorted_keys)} row(s)  ·  "
+                    f"{len(all_objs)} object column(s)",
+                    parent=win)
             except Exception as e:
-                messagebox.showerror("Cannot open", str(e))
+                messagebox.showerror("Save failed", str(e), parent=win)
 
-        if has_color:
-            ctk.CTkButton(btn_frame, text="🖼  Color  (.jpg)", width=150, height=42,
-                          fg_color=ACCENT, hover_color=ACCENT2,
-                          font=("Courier New", 12, "bold"), text_color="white",
-                          command=lambda: (_open_file(rec["color_path"]), win.destroy())
-                          ).pack(side="left", padx=8)
-        if has_depth:
-            ctk.CTkButton(btn_frame, text="◧  Depth  (.png)", width=150, height=42,
-                          fg_color=ACCENT2, hover_color=ACCENT,
-                          font=("Courier New", 12, "bold"), text_color="white",
-                          command=lambda: (_open_file(rec["depth_path"]), win.destroy())
-                          ).pack(side="left", padx=8)
-        if has_color and has_depth:
-            ctk.CTkButton(win, text="Open both", width=120, height=32,
-                          fg_color=BG_FIELD, border_width=1, border_color=BORDER,
-                          hover_color=BG_MID, font=("Courier New", 10), text_color=TEXT_DIM,
-                          command=_open_both).pack(pady=(10, 0))
+        # ── wire up buttons ───────────────────────────────────────────────────
+        def set_mode(m):
+            state["mode"] = m
+            refresh()
 
-        # Show file paths
-        if has_color:
-            ctk.CTkLabel(win, text=f"Color: …{os.sep}{os.path.basename(rec['color_path'])}",
-                         font=("Courier New", 8), text_color=TEXT_DIM).pack(pady=(8, 0))
-        if has_depth:
-            ctk.CTkLabel(win, text=f"Depth: …{os.sep}{os.path.basename(rec['depth_path'])}",
-                         font=("Courier New", 8), text_color=TEXT_DIM).pack(pady=(2, 0))
+        def go_prev():
+            if state["idx"] > 0:
+                state["idx"] -= 1
+                refresh()
+
+        def go_next():
+            if state["idx"] < total - 1:
+                state["idx"] += 1
+                refresh()
+
+        color_tab.configure(command=lambda: set_mode("color"))
+        depth_tab.configure(command=lambda: set_mode("depth"))
+        prev_btn.configure(command=go_prev)
+        next_btn.configure(command=go_next)
+
+        win.bind("<Left>",  lambda e: go_prev())
+        win.bind("<Right>", lambda e: go_next())
+        win.bind("c",       lambda e: set_mode("color"))
+        win.bind("d",       lambda e: set_mode("depth"))
+
+        canvas.bind("<Configure>",
+                    lambda e: win.after(80, refresh) if e.widget == canvas else None)
+
+        win.after(100, refresh)
 
     def _export_filter_list(self):
         if not self._filter_matches:
@@ -1101,30 +1603,54 @@ class DatasetManagerApp(ctk.CTk):
         messagebox.showinfo("Done", f"Copied {copied} file(s) to\n{dest}")
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  PREVIEW / SCAN
+    #  THREADING HELPERS
+    # ══════════════════════════════════════════════════════════════════════════
+    def _run_in_thread(self, fn, *args):
+        t = threading.Thread(target=fn, args=args, daemon=True)
+        t.start()
+
+    def _safe_ui(self, fn, *args):
+        self.after(0, fn, *args)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  PREVIEW / SCAN  (threaded)
     # ══════════════════════════════════════════════════════════════════════════
     def _scan_all(self):
         root = self._get_root()
         if not root:
             return
         self._clear_log(self._preview_box)
-        total = bad = 0
-        for abs_path, rel_folder, fname in walk_images(root):
-            parts = parse_filename(fname)
-            if parts:
-                ftype = "color" if parts["ext"] == ".jpg" else "depth"
-                row = (f"  {rel_folder:<30}  {parts['room']:8}  {parts['height']:7}  "
-                       f"{ANGLE_LABEL.get(parts['angle'],parts['angle']):10}  "
-                       f"{parts['distance']:9}  "
-                       f"{LIGHT_LABEL.get(parts['lighting'],parts['lighting']):8}  "
-                       f"{parts['sequence']:6}  {ftype}")
-                self._log(self._preview_box, row)
-                total += 1
-            else:
-                self._log(self._preview_box, f"  [UNRECOGNISED]  {rel_folder}/{fname}")
-                bad += 1
-        self._scan_count.set(f"{total} valid, {bad} unrecognised")
-        self._set_status(f"Scan complete: {total} images found")
+        self._scan_count.set("Scanning…")
+        self._set_status("Scanning…")
+
+        def _worker():
+            rows = []
+            total = bad = 0
+            for abs_path, rel_folder, fname in walk_images(root):
+                parts = parse_filename(fname)
+                if parts:
+                    ftype = "color" if parts["ext"] == ".jpg" else "depth"
+                    rows.append(
+                        f"  {rel_folder:<30}  {parts['room']:8}  {parts['height']:7}  "
+                        f"{ANGLE_LABEL.get(parts['angle'],parts['angle']):10}  "
+                        f"{parts['distance']:9}  "
+                        f"{LIGHT_LABEL.get(parts['lighting'],parts['lighting']):8}  "
+                        f"{parts['sequence']:6}  {ftype}")
+                    total += 1
+                else:
+                    rows.append(f"  [UNRECOGNISED]  {rel_folder}/{fname}")
+                    bad += 1
+
+            def _update():
+                self._preview_box.configure(state="normal")
+                for r in rows:
+                    self._preview_box.insert("end", r + "\n")
+                self._preview_box.configure(state="disabled")
+                self._scan_count.set(f"{total} valid, {bad} unrecognised")
+                self._set_status(f"Scan complete: {total} images found")
+            self.after(0, _update)
+
+        self._run_in_thread(_worker)
 
 
 # ─── Entry ────────────────────────────────────────────────────────────────────
