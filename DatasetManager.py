@@ -1,11 +1,10 @@
 import customtkinter as ctk
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 import os
 import re
 import shutil
 import threading
-import queue
 from collections import defaultdict
 
 try:
@@ -15,16 +14,16 @@ try:
 except ImportError:
     _XLSX_OK = False
 
-# ─── Theme ───────────────────────────────────────────────────────────────────
+# ─── Theme ────────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-ACCENT   = "#4F8EF7"
-ACCENT2  = "#7C5CFC"
-BG_DARK  = "#0F1117"
-BG_MID   = "#161B27"
-BG_CARD  = "#1E2535"
-BG_FIELD = "#252D3D"
+ACCENT    = "#4F8EF7"
+ACCENT2   = "#7C5CFC"
+BG_DARK   = "#0F1117"
+BG_MID    = "#161B27"
+BG_CARD   = "#1E2535"
+BG_FIELD  = "#252D3D"
 TEXT_MAIN = "#E8EDF5"
 TEXT_DIM  = "#7A8599"
 SUCCESS   = "#3DD68C"
@@ -49,7 +48,7 @@ def parse_filename(name: str) -> dict | None:
         "distance": m.group(4),
         "lighting": m.group(5),
         "sequence": m.group(6),
-        "is_depth": m.group(7) is not None,   # True when "_depth" suffix present
+        "is_depth": m.group(7) is not None,
         "ext":      m.group(8).lower(),
         "original": name,
     }
@@ -60,14 +59,13 @@ def build_filename(parts: dict) -> str:
             f"{parts['distance']}_{parts['lighting']}_{parts['sequence']}"
             f"{depth_suffix}{parts['ext']}")
 
-ANGLE_LABEL  = {"1": "Ortho", "2": "Diagonal", "3": "Top-down"}
-DIST_LABEL   = {"close": "Close", "medium": "Medium", "far": "Far"}
-LIGHT_LABEL  = {"dim": "Dim", "well": "Well-lit"}
-HEIGHT_OPTS  = ["0.8m", "1.2m", "1.6m"]
-ANGLE_OPTS   = ["1", "2", "3"]
-DIST_OPTS    = ["close", "medium", "far"]
-LIGHT_OPTS   = ["dim", "well"]
-
+ANGLE_LABEL = {"1": "Ortho", "2": "Diagonal", "3": "Top-down"}
+DIST_LABEL  = {"close": "Close", "medium": "Medium", "far": "Far"}
+LIGHT_LABEL = {"dim": "Dim", "well": "Well-lit"}
+HEIGHT_OPTS = ["0.8m", "1.2m", "1.6m"]
+ANGLE_OPTS  = ["1", "2", "3"]
+DIST_OPTS   = ["close", "medium", "far"]
+LIGHT_OPTS  = ["dim", "well"]
 
 def walk_images(root: str):
     for dirpath, _, files in os.walk(root):
@@ -191,7 +189,6 @@ class DatasetManagerApp(ctk.CTk):
                              placeholder_text=opts, width=180).grid(
                                  row=i, column=1, sticky="w", padx=10, pady=6)
 
-        # ── Sequence ─── All / Selected toggle ────────────────────────────────
         seq_outer = ctk.CTkFrame(left, fg_color="transparent")
         seq_outer.pack(fill="x", pady=(10, 0))
         self._section_label(seq_outer, "SEQUENCE")
@@ -228,7 +225,6 @@ class DatasetManagerApp(ctk.CTk):
                          placeholder_text=ph).pack(side="left", padx=(0, 14))
         self._toggle_seq_fields()
 
-        # ── Filter rows to rename ─────────────────────────────────────────────
         filter_row = ctk.CTkFrame(left, fg_color="transparent")
         filter_row.pack(fill="x", pady=(10, 0))
         self._section_label(filter_row, "ONLY RENAME FILES MATCHING  (leave blank = all)")
@@ -264,7 +260,6 @@ class DatasetManagerApp(ctk.CTk):
                              placeholder_text=opts).grid(
                                  row=j//3, column=(j%3)*2+1, sticky="w", padx=6, pady=6)
 
-        # ── Right panel options ───────────────────────────────────────────────
         self._section_label(right, "OPTIONS")
         opts_frame = ctk.CTkFrame(right, fg_color=BG_FIELD, corner_radius=8)
         opts_frame.pack(fill="x", pady=(4, 0))
@@ -302,7 +297,7 @@ class DatasetManagerApp(ctk.CTk):
             child.configure(state=state)
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  TAB 2 — FILTER / SEARCH
+    #  TAB 2 — FILTER / SEARCH  (virtual-scroll Treeview — no per-row widgets)
     # ══════════════════════════════════════════════════════════════════════════
     def _build_filter_tab(self, parent):
         parent.configure(fg_color=BG_CARD)
@@ -343,7 +338,6 @@ class DatasetManagerApp(ctk.CTk):
                              placeholder_text="—").grid(
                                  row=1, column=idx, sticky="w", padx=10, pady=(0, 8))
 
-        # ── Sequence — All / Selected ─────────────────────────────────────────
         seq_f = ctk.CTkFrame(top, fg_color="transparent")
         seq_f.pack(fill="x", pady=(6, 0))
         self._section_label(seq_f, "SEQUENCE")
@@ -380,7 +374,6 @@ class DatasetManagerApp(ctk.CTk):
                          placeholder_text=ph).pack(side="left", padx=(0, 14))
         self._toggle_fseq_fields()
 
-        # Extension filter
         self._filter_ext = tk.StringVar(value="both")
         ext_row = ctk.CTkFrame(top, fg_color="transparent")
         ext_row.pack(fill="x", pady=(8, 0))
@@ -411,35 +404,80 @@ class DatasetManagerApp(ctk.CTk):
                       hover_color=BG_MID, font=("Courier New", 11), text_color=ACCENT2,
                       command=self._copy_matched).pack(side="left", padx=4)
 
-        hint = ctk.CTkFrame(parent, fg_color="transparent")
-        hint.pack(fill="x", padx=12, pady=(4, 0))
-        self._section_label(hint, "RESULTS  —  click any row to open image")
-        ctk.CTkLabel(hint, text="(color .jpg  /  depth .png)",
-                     font=("Courier New", 9), text_color=TEXT_DIM).pack(
-                         side="right", padx=4, pady=(8, 2))
+        # ── Treeview (virtual scroll — renders only visible rows) ─────────────
+        tree_frame = ctk.CTkFrame(parent, fg_color=BG_FIELD, corner_radius=0)
+        tree_frame.pack(fill="both", expand=True, padx=12, pady=(4, 12))
 
-        col_hdr = ctk.CTkFrame(parent, fg_color=BG_MID, corner_radius=0, height=26)
-        col_hdr.pack(fill="x", padx=12)
-        col_hdr.pack_propagate(False)
-        for txt, w in [("Base filename (no ext)", 44), ("Room", 8), ("Height", 7),
-                        ("Angle", 10), ("Distance", 9), ("Lighting", 8),
-                        ("Seq", 6), ("Has", 7)]:
-            ctk.CTkLabel(col_hdr, text=txt.upper(), font=("Courier New", 9, "bold"),
-                         text_color=ACCENT, width=w*7, anchor="w").pack(side="left", padx=4)
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Dataset.Treeview",
+                         background=BG_FIELD,
+                         foreground=TEXT_MAIN,
+                         fieldbackground=BG_FIELD,
+                         rowheight=24,
+                         font=("Courier New", 10))
+        style.configure("Dataset.Treeview.Heading",
+                         background=BG_MID,
+                         foreground=ACCENT,
+                         font=("Courier New", 9, "bold"),
+                         relief="flat")
+        style.map("Dataset.Treeview",
+                  background=[("selected", BG_MID)],
+                  foreground=[("selected", ACCENT)])
+        style.map("Dataset.Treeview.Heading",
+                  background=[("active", BG_CARD)])
 
-        self._filter_scroll = ctk.CTkScrollableFrame(
-            parent, fg_color=BG_FIELD, corner_radius=0)
-        self._filter_scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        cols = ("base", "room", "height", "angle", "distance", "lighting", "seq", "has")
+        self._filter_tree = ttk.Treeview(
+            tree_frame, columns=cols, show="headings",
+            style="Dataset.Treeview", selectmode="browse")
 
-        # _filter_matches now stores deduplicated records:
-        # list of dict with keys: base_key, parts, color_path, depth_path
+        col_cfg = [
+            ("base",      "Base filename",  320),
+            ("room",      "Room",            70),
+            ("height",    "Height",          60),
+            ("angle",     "Angle",           80),
+            ("distance",  "Distance",        75),
+            ("lighting",  "Lighting",        70),
+            ("seq",       "Seq",             50),
+            ("has",       "Has",             60),
+        ]
+        for cid, hdr, w in col_cfg:
+            self._filter_tree.heading(cid, text=hdr.upper())
+            self._filter_tree.column(cid, width=w, minwidth=40, anchor="w")
+
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical",
+                            command=self._filter_tree.yview)
+        self._filter_tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self._filter_tree.pack(fill="both", expand=True)
+        self._filter_tree.tag_configure("even", background=BG_FIELD)
+        self._filter_tree.tag_configure("odd",  background=BG_CARD)
+        self._filter_tree.bind("<Double-1>", self._on_tree_double_click)
+        self._filter_tree.bind("<Return>",   self._on_tree_double_click)
+
         self._filter_matches: list[dict] = []
-        self._filter_row_widgets: list[ctk.CTkFrame] = []
 
     def _toggle_fseq_fields(self):
         state = "normal" if self._fseq_mode.get() == "selected" else "disabled"
         for child in self._fseq_range_frame.winfo_children():
             child.configure(state=state)
+
+    def _on_tree_double_click(self, event=None):
+        sel = self._filter_tree.selection()
+        if not sel:
+            return
+        iid   = sel[0]
+        idx   = int(self._filter_tree.item(iid, "values")[7].split(":")[1]
+                    if ":" in str(self._filter_tree.item(iid, "values")[7])
+                    else self._filter_tree.index(iid))
+        # store index in hidden tag
+        tags  = self._filter_tree.item(iid, "tags")
+        for t in tags:
+            if t.startswith("idx:"):
+                idx = int(t[4:])
+                break
+        self._open_image_picker(idx)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  TAB 3 — MOVE BY ROOM
@@ -452,7 +490,6 @@ class DatasetManagerApp(ctk.CTk):
         right.pack(side="right", fill="y", padx=(0, 12), pady=12)
         right.pack_propagate(False)
 
-        # ── Room selector ─────────────────────────────────────────────────────
         self._section_label(left, "SELECT  ROOM(S)  TO  MOVE  (FFRRRR)")
         room_ctrl = ctk.CTkFrame(left, fg_color=BG_FIELD, corner_radius=8)
         room_ctrl.pack(fill="x", pady=(6, 0))
@@ -490,7 +527,6 @@ class DatasetManagerApp(ctk.CTk):
                       hover_color=BG_MID, font=("Courier New", 11), text_color=DANGER,
                       command=self._clear_move_rooms).pack(anchor="w", pady=(4, 0))
 
-        # ── Destination structure ─────────────────────────────────────────────
         self._section_label(left, "DESTINATION  STRUCTURE")
         dest_card = ctk.CTkFrame(left, fg_color=BG_FIELD, corner_radius=8)
         dest_card.pack(fill="x", pady=(4, 0))
@@ -521,7 +557,6 @@ class DatasetManagerApp(ctk.CTk):
                         fg_color=ACCENT, hover_color=ACCENT2).pack(
                             anchor="w", padx=14, pady=10)
 
-        # ── Right: destination + actions ──────────────────────────────────────
         self._section_label(right, "DESTINATION  FOLDER")
         self._move_dest = tk.StringVar(value="")
         ctk.CTkEntry(right, textvariable=self._move_dest,
@@ -637,22 +672,16 @@ class DatasetManagerApp(ctk.CTk):
         for abs_path, rel_folder, fname in walk_images(root):
             parts = parse_filename(fname)
             if not parts:
-                # File doesn't match naming convention — skip
                 continue
-
             if parts["room"] not in self._move_rooms:
                 continue
 
             if struct == "room_folder":
-                # Always route by actual file extension, never by which subfolder it came from
-                if fname.lower().endswith(".jpg"):
-                    sub = "color"
-                else:
-                    sub = "depth_raw"
+                sub = "color" if fname.lower().endswith(".jpg") else "depth_raw"
                 dst = os.path.join(dest, parts["room"], sub, fname)
             elif struct == "flat":
                 dst = os.path.join(dest, fname)
-            else:  # mirror — preserve the exact relative folder from dataset root
+            else:
                 dst = os.path.join(dest, rel_folder, fname)
 
             plan.append((abs_path, dst))
@@ -667,8 +696,7 @@ class DatasetManagerApp(ctk.CTk):
         if not plan:
             self._log(self._move_log, "No matching files found for selected rooms.")
             return
-        verb = "COPY" if self._move_copy.get() else "MOVE"
-        # count per type
+        verb      = "COPY" if self._move_copy.get() else "MOVE"
         jpg_count = sum(1 for s, _ in plan if s.lower().endswith(".jpg"))
         png_count = sum(1 for s, _ in plan if s.lower().endswith(".png"))
         self._log(self._move_log,
@@ -689,7 +717,7 @@ class DatasetManagerApp(ctk.CTk):
         if not plan:
             messagebox.showinfo("Nothing to do", "No matching files found.")
             return
-        verb = "copy" if self._move_copy.get() else "move"
+        verb      = "copy" if self._move_copy.get() else "move"
         jpg_count = sum(1 for s, _ in plan if s.lower().endswith(".jpg"))
         png_count = sum(1 for s, _ in plan if s.lower().endswith(".png"))
         if not messagebox.askyesno("Confirm",
@@ -865,19 +893,20 @@ class DatasetManagerApp(ctk.CTk):
         messagebox.showinfo("Complete", summary)
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  FILTER LOGIC
+    #  FILTER LOGIC  (threaded worker → Treeview bulk insert)
     # ══════════════════════════════════════════════════════════════════════════
     def _run_filter(self):
         root = self._get_root()
         if not root:
             return
         self._filter_count.set("Searching…")
-        self._run_in_thread(self._run_filter_worker)
+        threading.Thread(target=self._run_filter_worker, daemon=True).start()
 
     def _run_filter_worker(self):
         root = self.dataset_path.get().strip()
         if not root or not os.path.isdir(root):
             return
+
         fv  = self._filter_vars
         ext = self._filter_ext.get()
 
@@ -885,9 +914,7 @@ class DatasetManagerApp(ctk.CTk):
         seq_s = self._fseq_start.get().strip() if use_range else ""
         seq_e = self._fseq_end.get().strip()   if use_range else ""
 
-        # ── 1. Collect all matching files, group by base key ──────────────────
-        # base_key = room_height_angle_distance_lighting_sequence  (no ext)
-        grouped: dict[str, dict] = {}   # base_key -> {parts, color_path, depth_path}
+        grouped: dict[str, dict] = {}
 
         for abs_path, rel_folder, fname in walk_images(root):
             parts = parse_filename(fname)
@@ -920,86 +947,58 @@ class DatasetManagerApp(ctk.CTk):
             else:
                 grouped[base_key]["depth_path"] = abs_path
 
-        # ── 2. Apply extension filter, then sort by sequence ascending ──────────
         matches = []
         for rec in grouped.values():
-            if ext == "jpg"  and not rec["color_path"]: continue
-            if ext == "png"  and not rec["depth_path"]: continue
+            if ext == "jpg" and not rec["color_path"]: continue
+            if ext == "png" and not rec["depth_path"]: continue
             matches.append(rec)
 
         matches.sort(key=lambda r: int(r["parts"]["sequence"]))
 
-        # ── 3. Schedule UI rebuild on main thread ─────────────────────────────
-        self.after(0, lambda m=matches: self._build_filter_rows(m))
+        # Schedule UI update on main thread
+        self.after(0, lambda m=matches: self._populate_filter_tree(m))
 
-    def _build_filter_rows(self, matches):
-        """Must be called on the main thread. Rebuilds clickable result rows."""
+    def _populate_filter_tree(self, matches: list[dict]):
+        """
+        Clears and refills the Treeview in one shot.
+        Treeview is a native widget — inserting 10 000 rows takes ~0.3 s,
+        no per-row CTkFrame/Label overhead at all.
+        """
         self._filter_matches = matches
+        tree = self._filter_tree
 
-        for w in self._filter_row_widgets:
-            w.destroy()
-        self._filter_row_widgets.clear()
+        # Bulk-delete existing rows
+        tree.delete(*tree.get_children())
 
-        total = len(self._filter_matches)
-        self._filter_count.set(f"{total} unique record(s)")
-
-        for idx, rec in enumerate(self._filter_matches):
+        for idx, rec in enumerate(matches):
             p = rec["parts"]
-            has = []
-            if rec["color_path"]: has.append("JPG")
-            if rec["depth_path"]: has.append("PNG")
-            has_txt = "+".join(has)
+            has_parts = []
+            if rec["color_path"]: has_parts.append("JPG")
+            if rec["depth_path"]: has_parts.append("PNG")
+            has_txt = "+".join(has_parts)
 
-            base_name = rec["base_key"]
-            row_bg    = BG_FIELD if idx % 2 == 0 else BG_CARD
+            tag = ("even" if idx % 2 == 0 else "odd", f"idx:{idx}")
+            tree.insert("", "end",
+                        values=(
+                            rec["base_key"],
+                            p["room"],
+                            p["height"],
+                            ANGLE_LABEL.get(p["angle"], p["angle"]),
+                            p["distance"],
+                            LIGHT_LABEL.get(p["lighting"], p["lighting"]),
+                            p["sequence"],
+                            has_txt,
+                        ),
+                        tags=tag)
 
-            row_frame = ctk.CTkFrame(self._filter_scroll,
-                                     fg_color=row_bg, corner_radius=4,
-                                     cursor="hand2")
-            row_frame.pack(fill="x", pady=1)
-            self._filter_row_widgets.append(row_frame)
-
-            # columns
-            cols = [
-                (base_name,                                         44),
-                (p["room"],                                          8),
-                (p["height"],                                        7),
-                (ANGLE_LABEL.get(p["angle"], p["angle"]),           10),
-                (p["distance"],                                       9),
-                (LIGHT_LABEL.get(p["lighting"], p["lighting"]),      8),
-                (p["sequence"],                                       6),
-                (has_txt,                                             7),
-            ]
-            for col_txt, col_w in cols:
-                ctk.CTkLabel(row_frame, text=col_txt,
-                             font=("Courier New", 10), text_color=TEXT_MAIN,
-                             width=col_w*7, anchor="w").pack(side="left", padx=4, pady=4)
-
-            # bind click on the whole row and all its children
-            rec_copy = dict(rec)
-            def _on_click(event, i=idx):
-                self._open_image_picker(i)
-            row_frame.bind("<Button-1>", _on_click)
-            for child in row_frame.winfo_children():
-                child.bind("<Button-1>", _on_click)
-
-            # hover highlight
-            def _enter(e, f=row_frame, bg=row_bg):
-                f.configure(fg_color=BG_MID)
-                for c in f.winfo_children(): c.configure(fg_color=BG_MID)
-            def _leave(e, f=row_frame, bg=row_bg):
-                f.configure(fg_color=bg)
-                for c in f.winfo_children(): c.configure(fg_color=bg)
-            row_frame.bind("<Enter>", _enter)
-            row_frame.bind("<Leave>", _leave)
-            for child in row_frame.winfo_children():
-                child.bind("<Enter>", _enter)
-                child.bind("<Leave>", _leave)
-
+        total = len(matches)
+        self._filter_count.set(f"{total} unique record(s)")
         self._set_status(f"Filter: {total} unique record(s)")
 
+    # ══════════════════════════════════════════════════════════════════════════
+    #  IMAGE VIEWER  (object counter + Excel export)
+    # ══════════════════════════════════════════════════════════════════════════
     def _open_image_picker(self, start_idx: int):
-        """Full inline image viewer with object counter panel and Excel export."""
         try:
             from PIL import Image, ImageTk
             _pil_ok = True
@@ -1014,11 +1013,12 @@ class DatasetManagerApp(ctk.CTk):
         IMG_W, IMG_H = 900, 560
 
         state = {
-            "idx":   start_idx,
-            "mode":  "color",
-            "imgtk": None,
-            # object_counts: { image_base_key -> { obj_name -> count } }
+            "idx":          start_idx,
+            "mode":         "color",
+            "imgtk":        None,
+            "resize_job":   None,      # debounce handle
             "object_counts": {},
+            "known_objects_cache": None,  # invalidated on add/delete/rename
         }
 
         win = ctk.CTkToplevel(self)
@@ -1048,11 +1048,10 @@ class DatasetManagerApp(ctk.CTk):
                                text_color=ACCENT)
         seq_lbl.pack(side="right", padx=14)
 
-        # ── MAIN BODY: image left, panel right ────────────────────────────────
+        # ── BODY ─────────────────────────────────────────────────────────────
         body = ctk.CTkFrame(win, fg_color=BG_DARK, corner_radius=0)
         body.pack(fill="both", expand=True)
 
-        # ── LEFT: image canvas ────────────────────────────────────────────────
         canvas_frame = ctk.CTkFrame(body, fg_color=BG_FIELD, corner_radius=0)
         canvas_frame.pack(side="left", fill="both", expand=True)
 
@@ -1063,7 +1062,7 @@ class DatasetManagerApp(ctk.CTk):
                                   font=("Courier New", 13), text_color=TEXT_DIM,
                                   fg_color="transparent")
 
-        # ── RIGHT: object counter panel ───────────────────────────────────────
+        # ── RIGHT PANEL (object counter) ──────────────────────────────────────
         right_panel = ctk.CTkFrame(body, fg_color=BG_CARD, corner_radius=0, width=280)
         right_panel.pack(side="right", fill="y")
         right_panel.pack_propagate(False)
@@ -1072,110 +1071,106 @@ class DatasetManagerApp(ctk.CTk):
                      font=("Courier New", 9, "bold"), text_color=ACCENT).pack(
                          anchor="w", padx=14, pady=(12, 4))
 
-        add_obj_btn = ctk.CTkButton(right_panel, text="+ Add Object", height=32,
-                                    fg_color=ACCENT2, hover_color=ACCENT,
-                                    font=("Courier New", 11, "bold"), text_color="white",
-                                    command=lambda: _add_object_dialog())
-        add_obj_btn.pack(fill="x", padx=12, pady=(0, 8))
+        ctk.CTkButton(right_panel, text="+ Add Object", height=32,
+                      fg_color=ACCENT2, hover_color=ACCENT,
+                      font=("Courier New", 11, "bold"), text_color="white",
+                      command=lambda: _add_object_dialog()).pack(fill="x", padx=12, pady=(0, 8))
 
-        # scrollable table area
-        obj_scroll = ctk.CTkScrollableFrame(right_panel, fg_color=BG_FIELD,
-                                            corner_radius=6)
+        obj_scroll = ctk.CTkScrollableFrame(right_panel, fg_color=BG_FIELD, corner_radius=6)
         obj_scroll.pack(fill="both", expand=True, padx=12, pady=(0, 6))
 
-        # list of (obj_name, count_var, row_frame) — rebuilt per image
-        obj_rows: list[dict] = []
+        # Per-row count StringVars: { obj_name -> StringVar }  — rebuilt per image
+        obj_count_vars: dict[str, tk.StringVar] = {}
 
-        def _get_counts_for_current():
+        # ── Cached object list ────────────────────────────────────────────────
+        def _all_known_objects() -> list[str]:
+            if state["known_objects_cache"] is None:
+                names: set[str] = set()
+                for d in state["object_counts"].values():
+                    names.update(d.keys())
+                state["known_objects_cache"] = sorted(names)
+            return state["known_objects_cache"]
+
+        def _invalidate_cache():
+            state["known_objects_cache"] = None
+
+        def _get_counts_for_current() -> dict:
             key = matches[state["idx"]]["base_key"]
             if key not in state["object_counts"]:
                 state["object_counts"][key] = {}
             return state["object_counts"][key]
 
+        # ── Rebuild object table (only when needed) ───────────────────────────
         def _rebuild_obj_table():
+            # Destroy old rows
             for w in obj_scroll.winfo_children():
                 w.destroy()
-            obj_rows.clear()
+            obj_count_vars.clear()
 
-            counts = _get_counts_for_current()
-            # ensure all known objects appear even if count=0
+            counts   = _get_counts_for_current()
             all_objs = _all_known_objects()
+
+            # Ensure every known object has an entry in current image
             for name in all_objs:
-                if name not in counts:
-                    counts[name] = 0
-                _add_obj_row(name, counts)
+                counts.setdefault(name, 0)
 
             if not all_objs:
                 ctk.CTkLabel(obj_scroll,
                              text="No objects added yet.\nClick '+ Add Object'.",
                              font=("Courier New", 9), text_color=TEXT_DIM,
                              justify="center").pack(pady=20)
+                return
 
-        def _all_known_objects():
-            """Return the union of all object names ever added."""
-            names = set()
-            for d in state["object_counts"].values():
-                names.update(d.keys())
-            return sorted(names)
+            for name in all_objs:
+                _add_obj_row(name, counts)
 
         def _add_obj_row(name: str, counts: dict):
             row = ctk.CTkFrame(obj_scroll, fg_color=BG_MID, corner_radius=4)
             row.pack(fill="x", pady=2)
 
-            # object name label (left side)
             ctk.CTkLabel(row, text=name, font=("Courier New", 10),
                          text_color=TEXT_MAIN, anchor="w", width=90).pack(
                              side="left", padx=(8, 4), pady=6)
 
             cnt_var = tk.StringVar(value=str(counts.get(name, 0)))
+            obj_count_vars[name] = cnt_var
 
-            minus_btn = ctk.CTkButton(row, text="−", width=26, height=26,
-                                      fg_color=BG_FIELD, hover_color=DANGER,
-                                      font=("Courier New", 13, "bold"),
-                                      text_color=TEXT_MAIN, corner_radius=4,
-                                      command=lambda n=name: _change_count(n, -1))
-            minus_btn.pack(side="left", padx=1)
+            ctk.CTkButton(row, text="−", width=26, height=26,
+                          fg_color=BG_FIELD, hover_color=DANGER,
+                          font=("Courier New", 13, "bold"),
+                          text_color=TEXT_MAIN, corner_radius=4,
+                          command=lambda n=name: _change_count(n, -1)).pack(side="left", padx=1)
 
             ctk.CTkLabel(row, textvariable=cnt_var,
                          font=("Courier New", 12, "bold"),
                          text_color=ACCENT, width=30,
                          anchor="center").pack(side="left", padx=1)
 
-            plus_btn = ctk.CTkButton(row, text="+", width=26, height=26,
-                                     fg_color=BG_FIELD, hover_color=SUCCESS,
-                                     font=("Courier New", 13, "bold"),
-                                     text_color=TEXT_MAIN, corner_radius=4,
-                                     command=lambda n=name: _change_count(n, +1))
-            plus_btn.pack(side="left", padx=1)
+            ctk.CTkButton(row, text="+", width=26, height=26,
+                          fg_color=BG_FIELD, hover_color=SUCCESS,
+                          font=("Courier New", 13, "bold"),
+                          text_color=TEXT_MAIN, corner_radius=4,
+                          command=lambda n=name: _change_count(n, +1)).pack(side="left", padx=1)
 
-            # ── edit button ───────────────────────────────────────────────────
-            edit_btn = ctk.CTkButton(row, text="✎", width=26, height=26,
-                                     fg_color=BG_FIELD, hover_color=WARNING,
-                                     font=("Courier New", 12, "bold"),
-                                     text_color=WARNING, corner_radius=4,
-                                     command=lambda n=name: _edit_obj_name(n))
-            edit_btn.pack(side="left", padx=(4, 1))
+            ctk.CTkButton(row, text="✎", width=26, height=26,
+                          fg_color=BG_FIELD, hover_color=WARNING,
+                          font=("Courier New", 12, "bold"),
+                          text_color=WARNING, corner_radius=4,
+                          command=lambda n=name: _edit_obj_name(n)).pack(side="left", padx=(4, 1))
 
-            # ── delete button ─────────────────────────────────────────────────
-            del_btn = ctk.CTkButton(row, text="✕", width=26, height=26,
-                                    fg_color=BG_FIELD, hover_color=DANGER,
-                                    font=("Courier New", 11, "bold"),
-                                    text_color=DANGER, corner_radius=4,
-                                    command=lambda n=name: _delete_obj(n))
-            del_btn.pack(side="left", padx=(1, 6))
-
-            obj_rows.append({"name": name, "var": cnt_var})
+            ctk.CTkButton(row, text="✕", width=26, height=26,
+                          fg_color=BG_FIELD, hover_color=DANGER,
+                          font=("Courier New", 11, "bold"),
+                          text_color=DANGER, corner_radius=4,
+                          command=lambda n=name: _delete_obj(n)).pack(side="left", padx=(1, 6))
 
         def _change_count(name: str, delta: int):
             counts = _get_counts_for_current()
             counts[name] = max(0, counts.get(name, 0) + delta)
-            for r in obj_rows:
-                if r["name"] == name:
-                    r["var"].set(str(counts[name]))
-                    break
+            if name in obj_count_vars:
+                obj_count_vars[name].set(str(counts[name]))
 
         def _delete_obj(name: str):
-            """Remove an object from all images after confirmation."""
             if not messagebox.askyesno(
                     "Delete object",
                     f"Remove '{name}' and all its counts from every image?",
@@ -1183,10 +1178,10 @@ class DatasetManagerApp(ctk.CTk):
                 return
             for d in state["object_counts"].values():
                 d.pop(name, None)
+            _invalidate_cache()
             _rebuild_obj_table()
 
         def _edit_obj_name(old_name: str):
-            """Rename an object across all images."""
             dlg = ctk.CTkToplevel(win)
             dlg.title("Edit Object Name")
             dlg.geometry("320x170")
@@ -1197,8 +1192,7 @@ class DatasetManagerApp(ctk.CTk):
             dlg.focus_force()
 
             ctk.CTkLabel(dlg, text="Rename object:",
-                         font=("Courier New", 10), text_color=TEXT_DIM).pack(
-                             pady=(18, 4))
+                         font=("Courier New", 10), text_color=TEXT_DIM).pack(pady=(18, 4))
 
             name_var = tk.StringVar(value=old_name)
             entry = ctk.CTkEntry(dlg, textvariable=name_var, width=240,
@@ -1221,14 +1215,13 @@ class DatasetManagerApp(ctk.CTk):
                 if new_name == old_name:
                     dlg.destroy()
                     return
-                # check for duplicates
                 if new_name in _all_known_objects():
                     err_var.set(f"'{new_name}' already exists.")
                     return
-                # rename key in every image count dict
                 for d in state["object_counts"].values():
                     if old_name in d:
                         d[new_name] = d.pop(old_name)
+                _invalidate_cache()
                 dlg.destroy()
                 _rebuild_obj_table()
 
@@ -1261,14 +1254,10 @@ class DatasetManagerApp(ctk.CTk):
                 name = name_entry.get().strip()
                 if not name:
                     return
-                # add to every existing image record so table is consistent
                 for d in state["object_counts"].values():
-                    if name not in d:
-                        d[name] = 0
-                # also seed current image
-                counts = _get_counts_for_current()
-                if name not in counts:
-                    counts[name] = 0
+                    d.setdefault(name, 0)
+                _get_counts_for_current().setdefault(name, 0)
+                _invalidate_cache()
                 dlg.destroy()
                 _rebuild_obj_table()
 
@@ -1308,17 +1297,15 @@ class DatasetManagerApp(ctk.CTk):
                                  text_color=TEXT_MAIN)
         next_btn.pack(side="left", padx=6)
 
-        save_btn = ctk.CTkButton(nav_row, text="💾  Save Record", width=150, height=36,
-                                 fg_color=SUCCESS, hover_color="#2AB87A",
-                                 font=("Courier New", 11, "bold"), text_color="white",
-                                 command=lambda: _save_excel())
-        save_btn.pack(side="left", padx=14)
+        ctk.CTkButton(nav_row, text="💾  Save Record", width=150, height=36,
+                      fg_color=SUCCESS, hover_color="#2AB87A",
+                      font=("Courier New", 11, "bold"), text_color="white",
+                      command=lambda: _save_excel()).pack(side="left", padx=14)
 
-        rename_btn = ctk.CTkButton(nav_row, text="✎  Rename", width=120, height=36,
-                                   fg_color=WARNING, hover_color="#D4901E",
-                                   font=("Courier New", 11, "bold"), text_color="white",
-                                   command=lambda: _rename_dialog())
-        rename_btn.pack(side="left", padx=6)
+        ctk.CTkButton(nav_row, text="✎  Rename", width=120, height=36,
+                      fg_color=WARNING, hover_color="#D4901E",
+                      font=("Courier New", 11, "bold"), text_color="white",
+                      command=lambda: _rename_dialog()).pack(side="left", padx=6)
 
         fname_lbl = ctk.CTkLabel(bot, text="", font=("Courier New", 9),
                                  text_color=TEXT_DIM)
@@ -1332,14 +1319,13 @@ class DatasetManagerApp(ctk.CTk):
                 no_img_lbl.place(relx=0.5, rely=0.5, anchor="center")
                 return
             if not _pil_ok:
-                no_img_lbl.configure(
-                    text="Install Pillow to preview:\npip install Pillow")
+                no_img_lbl.configure(text="Install Pillow:\npip install Pillow")
                 no_img_lbl.place(relx=0.5, rely=0.5, anchor="center")
                 return
             try:
                 img = Image.open(path)
-                cw = canvas.winfo_width()  or IMG_W
-                ch = canvas.winfo_height() or IMG_H
+                cw  = canvas.winfo_width()  or IMG_W
+                ch  = canvas.winfo_height() or IMG_H
                 img.thumbnail((cw, ch), Image.LANCZOS)
                 imgtk = ImageTk.PhotoImage(img)
                 state["imgtk"] = imgtk
@@ -1350,16 +1336,18 @@ class DatasetManagerApp(ctk.CTk):
 
         def _highlight_tabs():
             if state["mode"] == "color":
-                color_tab.configure(fg_color=ACCENT, border_width=0, text_color="white")
-                depth_tab.configure(fg_color=BG_FIELD, border_width=1,
+                color_tab.configure(fg_color=ACCENT,    border_width=0, text_color="white")
+                depth_tab.configure(fg_color=BG_FIELD,  border_width=1,
                                     border_color=ACCENT2, text_color=ACCENT2)
             else:
-                color_tab.configure(fg_color=BG_FIELD, border_width=1,
+                color_tab.configure(fg_color=BG_FIELD,  border_width=1,
                                     border_color=ACCENT, text_color=ACCENT)
-                depth_tab.configure(fg_color=ACCENT2, border_width=0, text_color="white")
+                depth_tab.configure(fg_color=ACCENT2,   border_width=0, text_color="white")
 
-        # ── REFRESH ───────────────────────────────────────────────────────────
-        def refresh():
+        # ── REFRESH — only rebuilds obj table when image changes ──────────────
+        _last_key = [None]
+
+        def refresh(force_obj_rebuild=False):
             i   = state["idx"]
             rec = matches[i]
             p   = rec["parts"]
@@ -1394,28 +1382,38 @@ class DatasetManagerApp(ctk.CTk):
             next_btn.configure(state="normal" if i < total-1 else "disabled",
                                text_color=TEXT_MAIN if i < total-1 else TEXT_DIM)
 
-            _rebuild_obj_table()
+            # Only rebuild object table if image changed OR forced
+            current_key = rec["base_key"]
+            if current_key != _last_key[0] or force_obj_rebuild:
+                _last_key[0] = current_key
+                _rebuild_obj_table()
+
+        # ── DEBOUNCED CANVAS RESIZE ───────────────────────────────────────────
+        def _on_canvas_resize(event):
+            if event.widget != canvas:
+                return
+            if state["resize_job"] is not None:
+                win.after_cancel(state["resize_job"])
+            state["resize_job"] = win.after(150, refresh)
+
+        canvas.bind("<Configure>", _on_canvas_resize)
 
         # ── SAVE TO EXCEL ─────────────────────────────────────────────────────
         def _save_excel():
             if not _XLSX_OK:
-                messagebox.showerror(
-                    "Missing library",
-                    "openpyxl is required to save Excel files.\n"
-                    "Run: pip install openpyxl")
+                messagebox.showerror("Missing library",
+                                     "openpyxl is required.\nRun: pip install openpyxl")
                 return
 
             all_objs = _all_known_objects()
             if not state["object_counts"]:
-                messagebox.showinfo("Nothing to save",
-                                    "No images visited yet.")
+                messagebox.showinfo("Nothing to save", "No images visited yet.")
                 return
 
             path = filedialog.asksaveasfilename(
                 defaultextension=".xlsx",
                 filetypes=[("Excel file", "*.xlsx")],
-                title="Save object record…",
-                parent=win)
+                title="Save object record…", parent=win)
             if not path:
                 return
 
@@ -1423,7 +1421,6 @@ class DatasetManagerApp(ctk.CTk):
             ws = wb.active
             ws.title = "Object Counts"
 
-            # ── colour palette ────────────────────────────────────────────────
             C_HDR_BG   = "1E2535"
             C_HDR_FG   = "4F8EF7"
             C_OBJ_BG   = "252D3D"
@@ -1437,189 +1434,122 @@ class DatasetManagerApp(ctk.CTk):
             data_font = Font(name="Calibri", bold=False, color="E8EDF5",  size=10)
             cnt_font  = Font(name="Calibri", bold=True,  color="E8EDF5",  size=10)
 
-            hdr_fill  = PatternFill("solid", fgColor=C_HDR_BG)
-            obj_fill  = PatternFill("solid", fgColor=C_OBJ_BG)
+            hdr_fill = PatternFill("solid", fgColor=C_HDR_BG)
+            obj_fill = PatternFill("solid", fgColor=C_OBJ_BG)
+            center   = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            left_a   = Alignment(horizontal="left",   vertical="center", wrap_text=False)
+            thin     = Side(style="thin", color=C_BORDER)
+            brd      = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-            center = Alignment(horizontal="center", vertical="center",
-                               wrap_text=True)
-            left   = Alignment(horizontal="left",   vertical="center",
-                               wrap_text=False)
-
-            thin   = Side(style="thin",   color=C_BORDER)
-            medium = Side(style="medium", color="4F8EF7")
-            brd    = Border(left=thin, right=thin, top=thin, bottom=thin)
-            brd_m  = Border(left=medium, right=thin, top=thin, bottom=thin)
-
-            # ── column definitions ────────────────────────────────────────────
-            # (header_text, width, alignment, is_meta)
             META_COLS = [
-                ("Date",                    13, left,   True),
-                ("Floor",                    7, center, True),
-                ("Room",                     7, center, True),
-                ("Height (m)",               9, center, True),
-                ("Distance",                10, center, True),
-                ("Angle",                   11, center, True),
-                ("Lighting",                10, center, True),
-                ("Resolution",              12, center, True),
-                ("RGB Format",              10, center, True),
-                ("Depth Format",            11, center, True),
-                ("Start Filename",          34, left,   True),
-                ("End Filename",            34, left,   True),
-                ("# Images",                9, center, True),
-                ("Est. Total Objects",      14, center, True),
+                ("Date",               13, left_a,  True),
+                ("Floor",               7, center,  True),
+                ("Room",                7, center,  True),
+                ("Height (m)",          9, center,  True),
+                ("Distance",           10, center,  True),
+                ("Angle",              11, center,  True),
+                ("Lighting",           10, center,  True),
+                ("Resolution",         12, center,  True),
+                ("RGB Format",         10, center,  True),
+                ("Depth Format",       11, center,  True),
+                ("Start Filename",     34, left_a,  True),
+                ("End Filename",       34, left_a,  True),
+                ("# Images",            9, center,  True),
+                ("Est. Total Objects", 14, center,  True),
             ]
-            # object columns (dynamic)
-            OBJ_COLS = [(name, max(12, len(name)+2), center, False)
-                        for name in all_objs]
-            # trailing meta
-            TRAIL_COLS = [
-                ("Object Class",            18, left,   True),
-                ("Notes",                   28, left,   True),
-            ]
+            OBJ_COLS   = [(n, max(12, len(n)+2), center, False) for n in all_objs]
+            TRAIL_COLS = [("Object Class", 18, left_a, True),
+                          ("Notes",        28, left_a, True)]
+            ALL_COLS   = META_COLS + OBJ_COLS + TRAIL_COLS
+            N_META     = len(META_COLS)
+            N_OBJ      = len(OBJ_COLS)
 
-            ALL_COLS = META_COLS + OBJ_COLS + TRAIL_COLS
-            N_META   = len(META_COLS)
-            N_OBJ    = len(OBJ_COLS)
-
-            # ── header row ────────────────────────────────────────────────────
-            for ci, (hdr, width, align, is_meta) in enumerate(ALL_COLS, start=1):
+            for ci, (hdr, width, align, is_meta) in enumerate(ALL_COLS, 1):
                 cell = ws.cell(row=1, column=ci, value=hdr)
-                if not is_meta:                       # object column
-                    cell.font      = obj_font
-                    cell.fill      = obj_fill
-                else:
-                    cell.font      = hdr_font
-                    cell.fill      = hdr_fill
-                cell.alignment = center               # all headers centred
+                cell.font      = obj_font if not is_meta else hdr_font
+                cell.fill      = obj_fill if not is_meta else hdr_fill
+                cell.alignment = center
                 cell.border    = brd
-                ws.column_dimensions[
-                    openpyxl.utils.get_column_letter(ci)].width = width
-
+                ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = width
             ws.row_dimensions[1].height = 30
 
-            # ── data rows ─────────────────────────────────────────────────────
             import datetime
-
             sorted_keys = sorted(
                 state["object_counts"].keys(),
                 key=lambda k: int(
                     next((m["parts"]["sequence"]
                           for m in matches if m["base_key"] == k), "0")))
 
-            for row_i, key in enumerate(sorted_keys, start=2):
+            for row_i, key in enumerate(sorted_keys, 2):
                 rec    = next((m for m in matches if m["base_key"] == key), None)
                 counts = state["object_counts"].get(key, {})
-
                 row_fill = PatternFill("solid",
-                                       fgColor=C_ROW_EVEN if row_i % 2 == 0
-                                       else C_ROW_ODD)
-
+                                       fgColor=C_ROW_EVEN if row_i % 2 == 0 else C_ROW_ODD)
                 if rec:
-                    p = rec["parts"]
+                    p          = rec["parts"]
                     floor_code = p["room"][:2]
                     room_code  = p["room"][2:]
-                    # derive start/end filenames from color files if available
-                    start_f = (os.path.basename(rec["color_path"])
-                               if rec["color_path"] else "")
-                    end_f   = (os.path.basename(rec["color_path"])
-                               if rec["color_path"] else "")
-
-                    n_images = 1   # each row = one image pair
-
+                    start_f    = os.path.basename(rec["color_path"]) if rec["color_path"] else ""
                     total_objs = sum(counts.values())
-
-                    # object class = comma-joined names that have count > 0
-                    obj_class = ", ".join(
-                        n for n in all_objs if counts.get(n, 0) > 0)
-
-                    meta_vals = [
-                        datetime.date.today().isoformat(),  # Date
-                        floor_code,                          # Floor
-                        room_code,                           # Room
-                        p["height"].replace("m", ""),        # Height
-                        p["distance"].capitalize(),          # Distance
-                        ANGLE_LABEL.get(p["angle"], p["angle"]),  # Angle
-                        LIGHT_LABEL.get(p["lighting"], p["lighting"]),  # Lighting
-                        "1280x720",                          # Resolution (default)
-                        "jpg",                               # RGB Format
-                        "png",                               # Depth Format
-                        start_f,                             # Start Filename
-                        end_f,                               # End Filename
-                        n_images,                            # # Images
-                        total_objs,                          # Est. Total Objects
-                    ]
+                    obj_class  = ", ".join(n for n in all_objs if counts.get(n, 0) > 0)
+                    meta_vals  = [
+                        datetime.date.today().isoformat(), floor_code, room_code,
+                        p["height"].replace("m", ""), p["distance"].capitalize(),
+                        ANGLE_LABEL.get(p["angle"], p["angle"]),
+                        LIGHT_LABEL.get(p["lighting"], p["lighting"]),
+                        "1280x720", "jpg", "png", start_f, start_f, 1, total_objs]
                 else:
-                    meta_vals = [
-                        datetime.date.today().isoformat(),
-                        "", "", "", "", "", "", "", "", "",
-                        key, "", 1, 0]
+                    meta_vals = [datetime.date.today().isoformat(),
+                                 "", "", "", "", "", "", "", "", "", key, "", 1, 0]
                     obj_class = ""
 
-                obj_vals   = [counts.get(o, 0) for o in all_objs]
-                trail_vals = [obj_class, ""]
+                all_vals = meta_vals + [counts.get(o, 0) for o in all_objs] + [obj_class, ""]
 
-                all_vals = meta_vals + obj_vals + trail_vals
-
-                for ci, (val, (_, _, align, is_meta)) in enumerate(
-                        zip(all_vals, ALL_COLS), start=1):
-                    cell = ws.cell(row=row_i, column=ci, value=val)
-                    cell.fill   = row_fill
-                    cell.border = brd
-                    if not is_meta:
-                        cell.font      = cnt_font
-                        cell.alignment = center
-                    else:
-                        cell.font      = data_font
-                        cell.alignment = align
-
+                for ci, (val, (_, _, align, is_meta)) in enumerate(zip(all_vals, ALL_COLS), 1):
+                    cell           = ws.cell(row=row_i, column=ci, value=val)
+                    cell.fill      = row_fill
+                    cell.border    = brd
+                    cell.font      = cnt_font  if not is_meta else data_font
+                    cell.alignment = center    if not is_meta else align
                 ws.row_dimensions[row_i].height = 18
 
             ws.freeze_panes = "A2"
 
-            # ── totals row ────────────────────────────────────────────────────
-            tot_row = len(sorted_keys) + 2
+            # Totals row
+            tot_row  = len(sorted_keys) + 2
             tot_fill = PatternFill("solid", fgColor="0F1117")
             tot_font = Font(name="Calibri", bold=True, color="4F8EF7", size=10)
-
             for ci in range(1, len(ALL_COLS)+1):
-                cell = ws.cell(row=tot_row, column=ci)
-                cell.fill   = tot_fill
+                cell       = ws.cell(row=tot_row, column=ci)
+                cell.fill  = tot_fill
                 cell.border = brd
-                cell.font   = tot_font
-                col_name = ALL_COLS[ci-1][0]
+                cell.font  = tot_font
+                col_name   = ALL_COLS[ci-1][0]
                 if col_name == "Date":
-                    cell.value     = "TOTAL"
-                    cell.alignment = left
+                    cell.value = "TOTAL"; cell.alignment = left_a
                 elif col_name == "# Images":
-                    cell.value     = len(sorted_keys)
-                    cell.alignment = center
+                    cell.value = len(sorted_keys); cell.alignment = center
                 elif col_name == "Est. Total Objects":
-                    cell.value     = sum(
-                        sum(state["object_counts"].get(k, {}).values())
-                        for k in sorted_keys)
+                    cell.value = sum(sum(state["object_counts"].get(k, {}).values())
+                                     for k in sorted_keys)
                     cell.alignment = center
                 elif N_META <= ci-1 < N_META + N_OBJ:
-                    # sum each object column
-                    obj_name = all_objs[ci-1-N_META]
-                    cell.value = sum(
-                        state["object_counts"].get(k, {}).get(obj_name, 0)
-                        for k in sorted_keys)
+                    obj_name   = all_objs[ci-1-N_META]
+                    cell.value = sum(state["object_counts"].get(k, {}).get(obj_name, 0)
+                                     for k in sorted_keys)
                     cell.alignment = center
-
             ws.row_dimensions[tot_row].height = 20
 
             try:
                 wb.save(path)
-                messagebox.showinfo(
-                    "Saved",
-                    f"Record saved to:\n{path}\n\n"
-                    f"{len(sorted_keys)} row(s)  ·  "
-                    f"{len(all_objs)} object column(s)",
-                    parent=win)
+                messagebox.showinfo("Saved",
+                                    f"Record saved to:\n{path}\n\n"
+                                    f"{len(sorted_keys)} row(s)  ·  "
+                                    f"{len(all_objs)} object column(s)", parent=win)
             except Exception as e:
                 messagebox.showerror("Save failed", str(e), parent=win)
 
-        # ── RENAME CURRENT FILE ──────────────────────────────────────────────
+        # ── RENAME DIALOG ─────────────────────────────────────────────────────
         def _rename_dialog():
             rec = matches[state["idx"]]
             p   = rec["parts"]
@@ -1629,100 +1559,72 @@ class DatasetManagerApp(ctk.CTk):
             dlg.geometry("560x460")
             dlg.resizable(False, False)
             dlg.configure(fg_color=BG_DARK)
-            dlg.grab_set()
-            dlg.lift()
-            dlg.focus_force()
+            dlg.grab_set(); dlg.lift(); dlg.focus_force()
 
             ctk.CTkLabel(dlg, text="RENAME  FILE",
-                         font=("Courier New", 11, "bold"),
-                         text_color=ACCENT).pack(pady=(18, 2))
-            ctk.CTkLabel(dlg, text="Edit the fields below. Both color & depth files will be renamed.",
+                         font=("Courier New", 11, "bold"), text_color=ACCENT).pack(pady=(18, 2))
+            ctk.CTkLabel(dlg, text="Edit fields below. Both color & depth files will be renamed.",
                          font=("Courier New", 9), text_color=TEXT_DIM).pack(pady=(0, 12))
 
             form = ctk.CTkFrame(dlg, fg_color=BG_FIELD, corner_radius=8)
             form.pack(fill="x", padx=20, pady=4)
 
-            # ── field variables pre-filled from current record ────────────────
-            v_room    = tk.StringVar(value=p["room"])
-            v_height  = tk.StringVar(value=p["height"])
-            v_angle   = tk.StringVar(value=p["angle"])
-            v_dist    = tk.StringVar(value=p["distance"])
-            v_light   = tk.StringVar(value=p["lighting"])
-            v_seq     = tk.StringVar(value=p["sequence"])
+            v_room   = tk.StringVar(value=p["room"])
+            v_height = tk.StringVar(value=p["height"])
+            v_angle  = tk.StringVar(value=p["angle"])
+            v_dist   = tk.StringVar(value=p["distance"])
+            v_light  = tk.StringVar(value=p["lighting"])
+            v_seq    = tk.StringVar(value=p["sequence"])
 
             def _row(parent, label, widget_fn, row):
                 ctk.CTkLabel(parent, text=label, font=("Courier New", 10),
                              text_color=TEXT_DIM, anchor="e", width=130).grid(
                                  row=row, column=0, padx=(14,8), pady=8, sticky="e")
-                w = widget_fn(parent)
-                w.grid(row=row, column=1, padx=(0,14), pady=8, sticky="w")
-                return w
+                w = widget_fn(parent); w.grid(row=row, column=1, padx=(0,14), pady=8, sticky="w")
 
             _row(form, "Floor+Room (FFRRRR)", lambda p:
                  ctk.CTkEntry(p, textvariable=v_room, width=160,
                               font=("Courier New", 11), fg_color=BG_CARD,
                               text_color=TEXT_MAIN, border_color=ACCENT), 0)
-
             _row(form, "Height", lambda p:
-                 ctk.CTkOptionMenu(p, variable=v_height,
-                                   values=HEIGHT_OPTS,
+                 ctk.CTkOptionMenu(p, variable=v_height, values=HEIGHT_OPTS,
                                    fg_color=BG_CARD, button_color=ACCENT,
                                    button_hover_color=ACCENT2,
-                                   text_color=TEXT_MAIN,
-                                   font=("Courier New", 11), width=160), 1)
-
+                                   text_color=TEXT_MAIN, font=("Courier New", 11), width=160), 1)
             _row(form, "Angle", lambda p:
-                 ctk.CTkOptionMenu(p, variable=v_angle,
-                                   values=ANGLE_OPTS,
+                 ctk.CTkOptionMenu(p, variable=v_angle, values=ANGLE_OPTS,
                                    fg_color=BG_CARD, button_color=ACCENT,
                                    button_hover_color=ACCENT2,
-                                   text_color=TEXT_MAIN,
-                                   font=("Courier New", 11), width=160), 2)
-
+                                   text_color=TEXT_MAIN, font=("Courier New", 11), width=160), 2)
             _row(form, "Distance", lambda p:
-                 ctk.CTkOptionMenu(p, variable=v_dist,
-                                   values=DIST_OPTS,
+                 ctk.CTkOptionMenu(p, variable=v_dist, values=DIST_OPTS,
                                    fg_color=BG_CARD, button_color=ACCENT,
                                    button_hover_color=ACCENT2,
-                                   text_color=TEXT_MAIN,
-                                   font=("Courier New", 11), width=160), 3)
-
+                                   text_color=TEXT_MAIN, font=("Courier New", 11), width=160), 3)
             _row(form, "Lighting", lambda p:
-                 ctk.CTkOptionMenu(p, variable=v_light,
-                                   values=LIGHT_OPTS,
+                 ctk.CTkOptionMenu(p, variable=v_light, values=LIGHT_OPTS,
                                    fg_color=BG_CARD, button_color=ACCENT,
                                    button_hover_color=ACCENT2,
-                                   text_color=TEXT_MAIN,
-                                   font=("Courier New", 11), width=160), 4)
-
+                                   text_color=TEXT_MAIN, font=("Courier New", 11), width=160), 4)
             _row(form, "Sequence (4 digits)", lambda p:
                  ctk.CTkEntry(p, textvariable=v_seq, width=160,
                               font=("Courier New", 11), fg_color=BG_CARD,
                               text_color=TEXT_MAIN, border_color=ACCENT), 5)
 
-            # ── live preview label ────────────────────────────────────────────
             preview_var = tk.StringVar(value="")
-            preview_lbl = ctk.CTkLabel(dlg, textvariable=preview_var,
-                                       font=("Courier New", 9),
-                                       text_color=SUCCESS)
-            preview_lbl.pack(pady=(10, 0))
+            ctk.CTkLabel(dlg, textvariable=preview_var, font=("Courier New", 9),
+                         text_color=SUCCESS).pack(pady=(10, 0))
 
             def _update_preview(*_):
-                new_parts = dict(p)
-                new_parts.update({
-                    "room": v_room.get().strip(),
-                    "height": v_height.get(),
-                    "angle": v_angle.get(),
-                    "distance": v_dist.get(),
-                    "lighting": v_light.get(),
-                    "sequence": v_seq.get().strip(),
-                    "is_depth": False, "ext": ".jpg"
-                })
-                color_name = build_filename(new_parts)
-                new_parts["is_depth"] = True
-                new_parts["ext"] = ".png"
-                depth_name = build_filename(new_parts)
-                preview_var.set("Color: " + color_name + "\nDepth: " + depth_name)
+                np = dict(p)
+                np.update({"room": v_room.get().strip(), "height": v_height.get(),
+                            "angle": v_angle.get(), "distance": v_dist.get(),
+                            "lighting": v_light.get(), "sequence": v_seq.get().strip(),
+                            "is_depth": False, "ext": ".jpg"})
+                c = build_filename(np)
+                np["is_depth"] = True; np["ext"] = ".png"
+                d = build_filename(np)
+                preview_var.set(f"Color: {c}\nDepth: {d}")
 
             for v in (v_room, v_height, v_angle, v_dist, v_light, v_seq):
                 v.trace_add("write", _update_preview)
@@ -1735,72 +1637,50 @@ class DatasetManagerApp(ctk.CTk):
             def _do_rename():
                 room = v_room.get().strip()
                 seq  = v_seq.get().strip()
-
                 if not re.fullmatch(r"\d{6}", room):
-                    err_var.set("Room must be exactly 6 digits (FFRRRR).")
-                    return
+                    err_var.set("Room must be exactly 6 digits."); return
                 if not re.fullmatch(r"\d{4}", seq):
-                    err_var.set("Sequence must be exactly 4 digits.")
-                    return
+                    err_var.set("Sequence must be exactly 4 digits."); return
 
-                new_parts_base = {
-                    "room": room, "height": v_height.get(),
-                    "angle": v_angle.get(), "distance": v_dist.get(),
-                    "lighting": v_light.get(), "sequence": seq,
-                }
-
+                new_base = {"room": room, "height": v_height.get(),
+                            "angle": v_angle.get(), "distance": v_dist.get(),
+                            "lighting": v_light.get(), "sequence": seq}
                 errors = []
-                renamed_color = None
-                renamed_depth = None
 
-                # rename color (.jpg)
                 if rec["color_path"] and os.path.isfile(rec["color_path"]):
-                    np = dict(new_parts_base)
-                    np.update({"is_depth": False, "ext": ".jpg"})
-                    new_name  = build_filename(np)
-                    new_path  = os.path.join(
-                        os.path.dirname(rec["color_path"]), new_name)
+                    np = {**new_base, "is_depth": False, "ext": ".jpg"}
+                    new_path = os.path.join(os.path.dirname(rec["color_path"]),
+                                            build_filename(np))
                     try:
                         os.rename(rec["color_path"], new_path)
-                        renamed_color = new_path
+                        rec["color_path"] = new_path
                     except Exception as e:
                         errors.append(f"Color: {e}")
 
-                # rename depth (.png)
                 if rec["depth_path"] and os.path.isfile(rec["depth_path"]):
-                    np = dict(new_parts_base)
-                    np.update({"is_depth": True, "ext": ".png"})
-                    new_name  = build_filename(np)
-                    new_path  = os.path.join(
-                        os.path.dirname(rec["depth_path"]), new_name)
+                    np = {**new_base, "is_depth": True, "ext": ".png"}
+                    new_path = os.path.join(os.path.dirname(rec["depth_path"]),
+                                            build_filename(np))
                     try:
                         os.rename(rec["depth_path"], new_path)
-                        renamed_depth = new_path
+                        rec["depth_path"] = new_path
                     except Exception as e:
                         errors.append(f"Depth: {e}")
 
                 if errors:
-                    err_var.set("  |  ".join(errors))
-                    return
+                    err_var.set("  |  ".join(errors)); return
 
-                # update the in-memory record so viewer reflects new name
-                rec["color_path"] = renamed_color or rec["color_path"]
-                rec["depth_path"] = renamed_depth or rec["depth_path"]
                 new_key = (f"{room}_{v_height.get()}_{v_angle.get()}_"
                            f"{v_dist.get()}_{v_light.get()}_{seq}")
                 old_key = rec["base_key"]
                 rec["base_key"] = new_key
-                rec["parts"].update(new_parts_base)
-                rec["parts"]["original"] = (
-                    os.path.basename(rec["color_path"])
-                    if rec["color_path"] else new_key)
+                rec["parts"].update(new_base)
 
-                # migrate object counts to new key
                 if old_key in state["object_counts"]:
-                    state["object_counts"][new_key] =                         state["object_counts"].pop(old_key)
+                    state["object_counts"][new_key] = state["object_counts"].pop(old_key)
 
                 dlg.destroy()
-                refresh()
+                refresh(force_obj_rebuild=True)
 
             ctk.CTkButton(dlg, text="✔  Apply Rename", height=40,
                           fg_color=ACCENT, hover_color=ACCENT2,
@@ -1809,10 +1689,10 @@ class DatasetManagerApp(ctk.CTk):
             ctk.CTkButton(dlg, text="Cancel", height=32,
                           fg_color=BG_FIELD, border_width=1, border_color=BORDER,
                           hover_color=BG_MID, font=("Courier New", 11),
-                          text_color=TEXT_DIM,
-                          command=dlg.destroy).pack(fill="x", padx=20, pady=(0, 14))
+                          text_color=TEXT_DIM, command=dlg.destroy).pack(
+                              fill="x", padx=20, pady=(0, 14))
 
-        # ── wire up buttons ───────────────────────────────────────────────────
+        # ── Wire up buttons & keys ────────────────────────────────────────────
         def set_mode(m):
             state["mode"] = m
             refresh()
@@ -1837,11 +1717,11 @@ class DatasetManagerApp(ctk.CTk):
         win.bind("c",       lambda e: set_mode("color"))
         win.bind("d",       lambda e: set_mode("depth"))
 
-        canvas.bind("<Configure>",
-                    lambda e: win.after(80, refresh) if e.widget == canvas else None)
-
         win.after(100, refresh)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    #  EXPORT / COPY  (Filter tab)
+    # ══════════════════════════════════════════════════════════════════════════
     def _export_filter_list(self):
         if not self._filter_matches:
             messagebox.showinfo("Empty", "Run a search first.")
@@ -1882,17 +1762,7 @@ class DatasetManagerApp(ctk.CTk):
         messagebox.showinfo("Done", f"Copied {copied} file(s) to\n{dest}")
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  THREADING HELPERS
-    # ══════════════════════════════════════════════════════════════════════════
-    def _run_in_thread(self, fn, *args):
-        t = threading.Thread(target=fn, args=args, daemon=True)
-        t.start()
-
-    def _safe_ui(self, fn, *args):
-        self.after(0, fn, *args)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    #  PREVIEW / SCAN  (threaded)
+    #  PREVIEW / SCAN  (threaded, bulk insert)
     # ══════════════════════════════════════════════════════════════════════════
     def _scan_all(self):
         root = self._get_root()
@@ -1903,13 +1773,13 @@ class DatasetManagerApp(ctk.CTk):
         self._set_status("Scanning…")
 
         def _worker():
-            rows = []
+            lines = []
             total = bad = 0
             for abs_path, rel_folder, fname in walk_images(root):
                 parts = parse_filename(fname)
                 if parts:
                     ftype = "color" if parts["ext"] == ".jpg" else "depth"
-                    rows.append(
+                    lines.append(
                         f"  {rel_folder:<30}  {parts['room']:8}  {parts['height']:7}  "
                         f"{ANGLE_LABEL.get(parts['angle'],parts['angle']):10}  "
                         f"{parts['distance']:9}  "
@@ -1917,19 +1787,22 @@ class DatasetManagerApp(ctk.CTk):
                         f"{parts['sequence']:6}  {ftype}")
                     total += 1
                 else:
-                    rows.append(f"  [UNRECOGNISED]  {rel_folder}/{fname}")
+                    lines.append(f"  [UNRECOGNISED]  {rel_folder}/{fname}")
                     bad += 1
+
+            # Single bulk insert instead of many small ones
+            bulk = "\n".join(lines)
 
             def _update():
                 self._preview_box.configure(state="normal")
-                for r in rows:
-                    self._preview_box.insert("end", r + "\n")
+                self._preview_box.insert("end", bulk + "\n")
                 self._preview_box.configure(state="disabled")
                 self._scan_count.set(f"{total} valid, {bad} unrecognised")
                 self._set_status(f"Scan complete: {total} images found")
+
             self.after(0, _update)
 
-        self._run_in_thread(_worker)
+        threading.Thread(target=_worker, daemon=True).start()
 
 
 # ─── Entry ────────────────────────────────────────────────────────────────────
