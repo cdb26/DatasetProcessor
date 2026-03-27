@@ -634,7 +634,59 @@ class DatasetManagerApp(ctk.CTk):
         ctk.CTkLabel(R,textvariable=self._reseq_summary,font=("Courier New",10),
                      text_color=SUCCESS,justify="left").pack(anchor="w",padx=8,pady=(12,0))
 
-        self._sl(L,"RESEQUENCE  LOG")
+        # ── .bak restorer ─────────────────────────────────────────────────────
+        sep=ctk.CTkFrame(L,fg_color=BORDER,height=1,corner_radius=0)
+        sep.pack(fill="x",pady=(14,0))
+        self._sl(L,"BULK  .BAK  →  ORIGINAL  EXTENSION  RESTORER")
+        bak_info=ctk.CTkFrame(L,fg_color=BG_FIELD,corner_radius=8)
+        bak_info.pack(fill="x",pady=(4,0))
+        ctk.CTkLabel(bak_info,
+            text="Finds all .bak files and renames them back to their original extension.  "
+                 "e.g.  file.jpg.bak  ->  file.jpg",
+            font=("Courier New",9),text_color=TEXT_DIM,justify="left",anchor="w"
+            ).pack(anchor="w",padx=14,pady=8)
+
+        bak_row=ctk.CTkFrame(L,fg_color="transparent"); bak_row.pack(fill="x",pady=(6,0))
+        self._bak_folder=tk.StringVar()
+        ctk.CTkEntry(bak_row,textvariable=self._bak_folder,font=("Courier New",11),
+            fg_color=BG_FIELD,text_color=TEXT_MAIN,border_color=ACCENT,
+            placeholder_text="Select folder containing .bak files…",width=440
+            ).pack(side="left",padx=(0,10))
+        ctk.CTkButton(bak_row,text="Browse…",width=90,fg_color=ACCENT,hover_color=ACCENT2,
+            font=("Courier New",11,"bold"),
+            command=lambda:self._bak_folder.set(
+                filedialog.askdirectory(title="Select folder with .bak files") or
+                self._bak_folder.get())
+            ).pack(side="left",padx=(0,8))
+        ctk.CTkButton(bak_row,text="Use dataset root",width=130,fg_color=BG_CARD,
+            border_width=1,border_color=ACCENT,hover_color=BG_MID,
+            font=("Courier New",10),text_color=ACCENT,
+            command=lambda:self._bak_folder.set(self.dataset_path.get().strip())
+            ).pack(side="left")
+
+        bak_opts=ctk.CTkFrame(L,fg_color="transparent"); bak_opts.pack(fill="x",pady=(6,0))
+        self._bak_dry=tk.BooleanVar(value=True)
+        self._bak_delete=tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(bak_opts,text="Dry run  (preview only)",
+            variable=self._bak_dry,font=("Courier New",11),text_color=TEXT_MAIN,
+            fg_color=ACCENT,hover_color=ACCENT2).pack(side="left",padx=(0,16))
+        ctk.CTkCheckBox(bak_opts,text="Delete .bak after restoring",
+            variable=self._bak_delete,font=("Courier New",11),text_color=TEXT_MAIN,
+            fg_color=DANGER,hover_color="#C94040").pack(side="left")
+
+        bak_btns=ctk.CTkFrame(L,fg_color="transparent"); bak_btns.pack(fill="x",pady=(6,0))
+        ctk.CTkButton(bak_btns,text="⟳  Preview Restore",height=36,width=160,
+            fg_color=BG_FIELD,border_width=1,border_color=ACCENT,hover_color=BG_MID,
+            font=("Courier New",11,"bold"),text_color=ACCENT,
+            command=lambda:self._run_bak_restore(dry=True)).pack(side="left",padx=(0,8))
+        ctk.CTkButton(bak_btns,text="✔  Apply Restore",height=36,width=150,
+            fg_color=ACCENT,hover_color=ACCENT2,
+            font=("Courier New",11,"bold"),text_color="white",
+            command=lambda:self._run_bak_restore(dry=False)).pack(side="left")
+
+        sep2=ctk.CTkFrame(L,fg_color=BORDER,height=1,corner_radius=0)
+        sep2.pack(fill="x",pady=(12,0))
+        self._sl(L,"LOG")
         self._reseq_log=ctk.CTkTextbox(L,font=("Courier New",10),fg_color=BG_FIELD,
             text_color=TEXT_MAIN,border_color=BORDER,corner_radius=6)
         self._reseq_log.pack(fill="both",expand=True,pady=(4,0))
@@ -686,15 +738,34 @@ class DatasetManagerApp(ctk.CTk):
                 self.after(0,lambda:self._log(self._reseq_log,"No matching images found."))
                 return
 
-            # ── 2. For each group, sort by current sequence, assign new numbers ──
+            # ── 2. Collect ALL sequence slots across every group, sort globally ──
+            # Each "slot" = one (old_seq_number, group_key) pair.
+            # We sort ALL slots together by their current sequence number so the
+            # final numbering is continuous across groups (no reset per group).
+            all_slots = []   # list of (seq_int, gk, seq_str)
+            for gk, files in groups.items():
+                seen_seqs = set()
+                for fi in files:
+                    seq = fi["parts"]["sequence"]
+                    if seq not in seen_seqs:
+                        seen_seqs.add(seq)
+                        all_slots.append((int(seq), gk, seq))
+
+            all_slots.sort(key=lambda x: x[0])   # sort by existing sequence number globally
+
+            # Assign new sequence numbers in one continuous run
+            slot_new_seq: dict[tuple, str] = {}   # (gk, old_seq_str) -> new_seq_str
+            next_seq = start
+            for seq_int, gk, seq_str in all_slots:
+                slot_new_seq[(gk, seq_str)] = f"{next_seq:04d}"
+                next_seq += 1
+
             lines=[]; total_renamed=0; total_skipped=0; errors=0
+            all_rename_ops = []   # collect all ops; apply in one 2-pass batch
 
             for gk in sorted(groups.keys()):
                 files = groups[gk]
-                # Sort by existing sequence number
-                files.sort(key=lambda x: int(x["parts"]["sequence"]))
-
-                # Pair color+depth: group by sequence number
+                # Pair color+depth by sequence
                 seq_pairs: dict[str, dict] = {}
                 for fi in files:
                     seq = fi["parts"]["sequence"]
@@ -703,23 +774,19 @@ class DatasetManagerApp(ctk.CTk):
                     else:                       seq_pairs[seq]["color"] = fi
 
                 sorted_seqs = sorted(seq_pairs.keys(), key=lambda s: int(s))
-                lines.append(f"\nGroup: {gk}  ({len(sorted_seqs)} sequence(s))")
+                new_seqs_for_group = [slot_new_seq[(gk, s)] for s in sorted_seqs]
+                lines.append(f"\nGroup: {gk}  ({len(sorted_seqs)} slot(s)  →  "
+                              f"{new_seqs_for_group[0]}…{new_seqs_for_group[-1]})")
 
-                # Check if already correctly sequenced starting at 'start'
-                expected = list(range(start, start + len(sorted_seqs)))
-                actual   = [int(s) for s in sorted_seqs]
-                if actual == expected:
-                    lines.append(f"  ✔ Already correctly sequenced ({start:04d}…{expected[-1]:04d}). Skipping.")
+                # Check if already correctly sequenced (compare actual vs assigned)
+                already_ok = all(s == slot_new_seq[(gk, s)] for s in sorted_seqs)
+                if already_ok:
+                    lines.append(f"  ✔ Already correctly sequenced. Skipping.")
                     total_skipped += len(sorted_seqs)
                     continue
 
-                # Build rename plan for this group
-                # Use a 2-pass approach to avoid collisions:
-                #   pass 1: rename to temp names
-                #   pass 2: rename from temp to final
-                rename_ops = []  # list of (old_abs, new_abs, temp_abs)
-                for new_seq_int, old_seq in zip(expected, sorted_seqs):
-                    new_seq_str = f"{new_seq_int:04d}"
+                for old_seq in sorted_seqs:
+                    new_seq_str = slot_new_seq[(gk, old_seq)]
                     pair = seq_pairs[old_seq]
                     for role in ("color", "depth"):
                         fi = pair[role]
@@ -732,24 +799,25 @@ class DatasetManagerApp(ctk.CTk):
                             total_skipped += 1
                             continue
                         lines.append(f"  {fi['fname']}  →  {new_name}")
-                        rename_ops.append((fi["abs"], new_abs, temp_abs))
+                        all_rename_ops.append((fi["abs"], new_abs, temp_abs))
                         total_renamed += 1
 
-                if not dry and rename_ops:
-                    # Pass 1: → .reseq_tmp
-                    for old, new, tmp in rename_ops:
-                        try:
-                            if self._reseq_backup.get(): shutil.copy2(old, old+".bak")
-                            os.rename(old, tmp)
-                        except Exception as e:
-                            lines.append(f"  ✘ TEMP ERROR: {os.path.basename(old)}: {e}")
-                            errors += 1
-                    # Pass 2: .reseq_tmp → final
-                    for old, new, tmp in rename_ops:
-                        try: os.rename(tmp, new)
-                        except Exception as e:
-                            lines.append(f"  ✘ FINAL ERROR: {os.path.basename(tmp)}: {e}")
-                            errors += 1
+            # ── Single 2-pass batch rename (avoids collisions across groups) ──
+            if not dry and all_rename_ops:
+                # Pass 1: every file → .reseq_tmp
+                for old, new, tmp in all_rename_ops:
+                    try:
+                        if self._reseq_backup.get(): shutil.copy2(old, old+".bak")
+                        os.rename(old, tmp)
+                    except Exception as e:
+                        lines.append(f"  ✘ TEMP ERROR: {os.path.basename(old)}: {e}")
+                        errors += 1
+                # Pass 2: .reseq_tmp → final name
+                for old, new, tmp in all_rename_ops:
+                    try: os.rename(tmp, new)
+                    except Exception as e:
+                        lines.append(f"  ✘ FINAL ERROR: {os.path.basename(tmp)}: {e}")
+                        errors += 1
 
             bulk = "\n".join(lines)
             summary = (f"{'Preview: ' if dry else ''}"
@@ -763,6 +831,62 @@ class DatasetManagerApp(ctk.CTk):
                 self._set_status(summary)
                 if not dry and total_renamed > 0:
                     messagebox.showinfo("Resequence complete", summary)
+            self.after(0, _update)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _run_bak_restore(self, dry=True):
+        folder = self._bak_folder.get().strip()
+        if not folder or not os.path.isdir(folder):
+            messagebox.showerror("Error", "Please select a valid folder."); return
+
+        self._clr(self._reseq_log)
+        verb = "DRY RUN" if dry else "APPLYING"
+        self._log(self._reseq_log, f"{'─'*6}  {verb}  .BAK RESTORE  {'─'*6}")
+        self._log(self._reseq_log, "Folder: " + folder)
+
+        def _worker():
+            lines = []; restored = skipped = errors = 0
+            for dirpath, _, files in os.walk(folder):
+                for fname in sorted(files):
+                    if not fname.lower().endswith(".bak"): continue
+                    bak_path = os.path.join(dirpath, fname)
+                    # Strip the .bak suffix to get the original path
+                    orig_path = bak_path[:-4]   # removes ".bak"
+                    orig_name = os.path.basename(orig_path)
+
+                    if os.path.exists(orig_path):
+                        lines.append(f"  SKIP  {fname}  (original already exists)")
+                        skipped += 1
+                        continue
+
+                    lines.append(f"  {fname}  →  {orig_name}")
+
+                    if not dry:
+                        try:
+                            os.rename(bak_path, orig_path)
+                            if self._bak_delete.get():
+                                # already renamed — nothing to delete
+                                pass
+                            restored += 1
+                        except Exception as e:
+                            lines.append(f"    ✘ ERROR: {e}")
+                            errors += 1
+                    else:
+                        restored += 1   # count for preview
+
+            bulk = "\n".join(lines) if lines else "  No .bak files found."
+            summary = (f"{'Preview: ' if dry else ''}"
+                       f"{restored} file(s) {'would be ' if dry else ''}restored  |  "
+                       f"{skipped} skipped (original exists)  |  {errors} error(s)")
+
+            def _update():
+                self._log(self._reseq_log, bulk)
+                self._log(self._reseq_log, "\n" + "─"*40 + "\n" + summary)
+                self._reseq_summary.set(summary)
+                self._set_status(summary)
+                if not dry and restored > 0:
+                    messagebox.showinfo(".bak Restore complete", summary)
             self.after(0, _update)
 
         threading.Thread(target=_worker, daemon=True).start()
