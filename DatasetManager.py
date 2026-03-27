@@ -1,27 +1,3 @@
-"""
-Dataset Manager  —  optimised rewrite
-  • Treeview virtual-scroll for filter results (no per-row CTk widgets)
-  • Debounced canvas resize in viewer
-  • Object-table rebuilt only on image change (cached known-objects list)
-  • Bulk text insert in Scan tab
-  • DELETE image with automatic sequence rebalancing
-  • Object search bar in viewer right panel (instant filter, no rebuild)
-  • Open existing Excel and resume editing by FFRRRR code
-    - Auto-names saves as  <FFRRRR>.xlsx  (e.g. 060601.xlsx)
-    - "Open Existing Record" loads object counts back from a prior save
-"""
-import customtkinter as ctk"""
-Dataset Manager  —  optimised rewrite
-  • Treeview virtual-scroll for filter results (no per-row CTk widgets)
-  • Debounced canvas resize in viewer
-  • Object-table rebuilt only on image change (cached known-objects list)
-  • Bulk text insert in Scan tab
-  • DELETE image with automatic sequence rebalancing
-  • Object search bar in viewer right panel (instant filter, no rebuild)
-  • Open existing Excel and resume editing by FFRRRR code
-    - Auto-names saves as  <FFRRRR>.xlsx  (e.g. 060601.xlsx)
-    - "Open Existing Record" loads object counts back from a prior save
-"""
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -34,7 +10,6 @@ try:
 except ImportError:
     _XLSX_OK = False
 
-# ─── Theme ────────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
